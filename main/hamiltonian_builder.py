@@ -13,7 +13,7 @@ def pauli_ZZ(n,k,l):
     p[l] = "Z"
     return "".join(p)
 
- def domain_penalty_strings(phi, alpha):
+def domain_penalty_strings(phi, alpha):
      n = len(phi)
      terms = {}
 
