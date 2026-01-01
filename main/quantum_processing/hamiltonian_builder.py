@@ -12,6 +12,11 @@ def pauli_ZZ(n,k,l):
     p[k] = "Z"
     p[l] = "Z"
     return "".join(p)
+    
+def phi_circle_field(nodes, R=1.0):
+    x = nodes[:, 0]
+    y = nodes[:, 1]
+    return np.sqrt(x*x + y*y) - R
 
 def domain_penalty_strings(phi, alpha):
      n = len(phi)
