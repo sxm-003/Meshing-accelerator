@@ -11,6 +11,7 @@ from quantum_processing.hamiltonian_builder import (
     phi_circle_field,
 )
 from orchestrator.patch_record import PatchRecord
+from prefect_dask.task_runners import DaskTaskRunner
 
 
 @task
@@ -63,7 +64,9 @@ def build_hamiltonian_task(record: PatchRecord):
 
 
 
-@flow
+@flow(task_runner=DaskTaskRunner( 
+    cluster_kwargs={"n_workers": 40, "threads_per_worker": 1}
+    ))
 def mesh_hamiltonian_pipeline(
     dxf_path: str,
     L: float = 0.4,
