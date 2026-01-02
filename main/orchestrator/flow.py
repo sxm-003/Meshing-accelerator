@@ -12,7 +12,8 @@ from quantum_processing.hamiltonian_builder import (
 )
 from orchestrator.patch_record import PatchRecord
 from prefect_dask.task_runners import DaskTaskRunner
-
+from prefect.context import get_run_context
+from pathlib import Path
 
 @task
 def generate_nodes_task(dxf_path):
@@ -37,7 +38,7 @@ def build_patch_records(nodes, patches):
 
 
 @task(tags=["hamiltonian-medium"])
-def build_hamiltonian_task(record: PatchRecord):
+def build_hamiltonian_task(record: PatchRecord, ham_dir: str, rec_dir: str):
     phi = phi_circle_field(record.patch_nodes, R=1.0)
 
     H = hamiltonian_builder(
@@ -49,17 +50,16 @@ def build_hamiltonian_task(record: PatchRecord):
         gamma=1.0,
     )
 
-    os.makedirs("outputs/hamiltonians", exist_ok=True)
-    path = f"outputs/hamiltonians/{record.patch_id}.npz"
+    ham_path = os.path.join(ham_dir, f"{record.patch_id}.npz")
 
     np.savez(
-        path,
+        ham_path,
         paulis=H.paulis.to_labels(),
         coeffs=H.coeffs,
     )
 
-    record.hamiltonian_path = path
-    record.save()
+    record.hamiltonian_path = ham_path
+    record.save(rec_dir)
     return record
 
 
@@ -72,13 +72,29 @@ def mesh_hamiltonian_pipeline(
     L: float = 0.4,
     Q_max: int = 30,
 ):
+    ctx = get_run_context()
+    run_id = str(ctx.flow_run.id)
+    
+    base_dir = Path("outputs") / run_id
+
+    ham_dir = base_dir / "hamiltonians"
+    rec_dir = base_dir / "records"
+
+    ham_dir.mkdir(parents=True, exist_ok=True)
+    rec_dir.mkdir(parents=True, exist_ok=True)
     nodes = generate_nodes_task(dxf_path)
     patches = generate_patches_task(nodes, L, Q_max)
     records = build_patch_records(nodes, patches)
 
     futures = []
     for r in records:
-        futures.append(build_hamiltonian_task.submit(r))
+        futures.append(
+        build_hamiltonian_task.submit(
+            r,
+            str(ham_dir),
+            str(rec_dir),
+        )
+    )
 
     return futures
 

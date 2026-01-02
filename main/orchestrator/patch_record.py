@@ -18,13 +18,13 @@ class PatchRecord:
         arr = np.asarray(self.patch_nodes).round(6)
         self.patch_id = hashlib.sha256(arr.tobytes()).hexdigest()[:12]
 
-    def save(self, directory="outputs/records"):
+    def save(self, directory):
         os.makedirs(directory, exist_ok=True)
         path = os.path.join(directory, f"{self.patch_id}.json")
         with open(path, "w") as f:
             json.dump(
                 {
-                    "patch_id": self.patch_id,
+                    "patch_id": self.patch_id,  
                     "hamiltonian_path": self.hamiltonian_path,
                 },
                 f,
