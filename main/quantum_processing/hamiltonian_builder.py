@@ -84,7 +84,7 @@ def repulsion_penalty_strings(r, d_min, eta):
         
         for q in (k,l):
             vals_z = pauli_Z(n, q)
-            H_terms[vals_z] = H_terms.get(vals_z, 0.0) - eta * w / 4
+            terms[vals_z] = terms.get(vals_z, 0.0) - eta * w_kl / 4
 
     return terms
 
