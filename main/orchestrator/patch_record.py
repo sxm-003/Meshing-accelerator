@@ -1,5 +1,3 @@
-# orchestrator/patch_record.py
-
 from dataclasses import dataclass, field
 from typing import Optional
 import numpy as np
@@ -10,6 +8,7 @@ import os
 @dataclass
 class PatchRecord:
     patch_nodes: np.ndarray
+    phi: Optional[np.ndarray] = None   
 
     patch_id: str = field(init=False)
     hamiltonian_path: Optional[str] = None
@@ -21,13 +20,14 @@ class PatchRecord:
     def save(self, directory):
         os.makedirs(directory, exist_ok=True)
         path = os.path.join(directory, f"{self.patch_id}.json")
-        with open(path, "w") as f:
-            json.dump(
-                {
-                    "patch_id": self.patch_id,  
-                    "hamiltonian_path": self.hamiltonian_path,
-                },
-                f,
-                indent=2
-            )
 
+        json.dump(
+            {
+                "patch_id": self.patch_id,
+                "patch_nodes": self.patch_nodes.tolist(),
+                "phi": None if self.phi is None else self.phi.tolist(),
+                "hamiltonian_path": self.hamiltonian_path,
+            },
+            open(path, "w"),
+            indent=2,
+        )

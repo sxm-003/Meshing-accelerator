@@ -40,6 +40,7 @@ def build_patch_records(nodes, patches):
 @task(tags=["hamiltonian-medium"])
 def build_hamiltonian_task(record: PatchRecord, ham_dir: str, rec_dir: str):
     phi = phi_circle_field(record.patch_nodes, R=1.0)
+    record.phi = phi
 
     H = hamiltonian_builder(
         phi=phi,
