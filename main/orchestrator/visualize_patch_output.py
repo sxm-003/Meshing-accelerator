@@ -45,7 +45,7 @@ def patch_traces(
                 y=patch_nodes[selected, 1],
                 mode="markers",
                 marker=dict(
-                    size=9,
+                    size=3,
                     color="red",
                     symbol="x",
                 ),
