@@ -81,7 +81,7 @@ def build_hamiltonian_task(record: PatchRecord, ham_dir: str, rec_dir: str):
 def run_qaoa_task(record: PatchRecord, rec_dir: str):
     bitstring, energy = run_qaoa_aer(record.hamiltonian_path)
 
-    record.bitstring = bitstring
+    record.bitstring = "".join(str(b) for b in bitstring)
     record.energy = energy
 
     record.save(rec_dir)
@@ -89,7 +89,7 @@ def run_qaoa_task(record: PatchRecord, rec_dir: str):
 
 @task
 def visualize_task(record: PatchRecord):
-    fig = plot_patch_selection(
+    fig = single_patch_figure(
         patch_nodes=record.patch_nodes,
         phi=record.phi,
         bitstring=record.bitstring,
