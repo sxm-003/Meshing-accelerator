@@ -57,9 +57,16 @@ def build_hamiltonian_task(record: PatchRecord, ham_dir: str, rec_dir: str):
         r=record.patch_nodes,
         neighbors=[],
         L=1.0,
-        alpha=1.0,
+        alpha=0.1,
         gamma=1.0,
-    )
+        use_sparsity=True,
+        N=max(1, len(phi)//2),   # target number of selected nodes
+        mu=0.5, 
+        use_repulsion=True,
+        d_min=0.05,
+        eta=0.4,                                
+)
+
 
     ham_path = os.path.join(ham_dir, f"{record.patch_id}.npz")
 

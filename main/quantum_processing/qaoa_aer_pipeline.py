@@ -14,7 +14,7 @@ simulator = AerSimulator(method="statevector")
 sampler = SamplerV2()
 
 
-def ansatz_builder(H, reps=1):
+def ansatz_builder(H, reps=3):
     """Build QAOA ansatz circuit from Hamiltonian."""
     ansatz = QAOAAnsatz(H, reps=reps)
     return ansatz
