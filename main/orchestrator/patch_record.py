@@ -12,6 +12,8 @@ class PatchRecord:
 
     patch_id: str = field(init=False)
     hamiltonian_path: Optional[str] = None
+    bitstring: Optional[str] = None
+    energy: Optional[float] = None
 
     def __post_init__(self):
         arr = np.asarray(self.patch_nodes).round(6)
@@ -27,6 +29,8 @@ class PatchRecord:
                 "patch_nodes": self.patch_nodes.tolist(),
                 "phi": None if self.phi is None else self.phi.tolist(),
                 "hamiltonian_path": self.hamiltonian_path,
+                "bitstring": self.bitstring,
+                "energy": self.energy,
             },
             open(path, "w"),
             indent=2,

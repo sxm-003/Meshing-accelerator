@@ -15,6 +15,16 @@ from prefect_dask.task_runners import DaskTaskRunner
 from prefect.context import get_run_context
 from pathlib import Path
 
+from quantum_processing.qaoa_aer_pipeline import run_qaoa_aer
+from orchestrator.visualize_patch_output import (
+    patch_traces,
+    combined_figure,
+    single_patch_figure,
+)
+
+
+
+
 @task
 def generate_nodes_task(dxf_path):
     nodes, *_ = generate_crude_nodes(dxf_path)
@@ -37,7 +47,7 @@ def build_patch_records(nodes, patches):
     return records
 
 
-@task(tags=["hamiltonian-medium"])
+@task()
 def build_hamiltonian_task(record: PatchRecord, ham_dir: str, rec_dir: str):
     phi = phi_circle_field(record.patch_nodes, R=1.0)
     record.phi = phi
@@ -63,6 +73,29 @@ def build_hamiltonian_task(record: PatchRecord, ham_dir: str, rec_dir: str):
     record.save(rec_dir)
     return record
 
+@task(
+    tags=["qaoa-aer"],        # purely semantic
+    retries=1,
+    retry_delay_seconds=10,
+)
+def run_qaoa_task(record: PatchRecord, rec_dir: str):
+    bitstring, energy = run_qaoa_aer(record.hamiltonian_path)
+
+    record.bitstring = bitstring
+    record.energy = energy
+
+    record.save(rec_dir)
+    return record
+
+@task
+def visualize_task(record: PatchRecord):
+    fig = plot_patch_selection(
+        patch_nodes=record.patch_nodes,
+        phi=record.phi,
+        bitstring=record.bitstring,
+        title=f"Patch {record.patch_id}",
+    )
+    fig.show()
 
 
 @flow(task_runner=DaskTaskRunner( 
@@ -71,7 +104,7 @@ def build_hamiltonian_task(record: PatchRecord, ham_dir: str, rec_dir: str):
 def mesh_hamiltonian_pipeline(
     dxf_path: str,
     L: float = 0.4,
-    Q_max: int = 30,
+    Q_max: int = 9,
 ):
     ctx = get_run_context()
     run_id = str(ctx.flow_run.id)
@@ -83,22 +116,48 @@ def mesh_hamiltonian_pipeline(
 
     ham_dir.mkdir(parents=True, exist_ok=True)
     rec_dir.mkdir(parents=True, exist_ok=True)
+
+    # --- pipeline ---
     nodes = generate_nodes_task(dxf_path)
     patches = generate_patches_task(nodes, L, Q_max)
     records = build_patch_records(nodes, patches)
 
-    futures = []
+    ham_futures = []
     for r in records:
-        futures.append(
-        build_hamiltonian_task.submit(
-            r,
-            str(ham_dir),
-            str(rec_dir),
+        ham_futures.append(
+            build_hamiltonian_task.submit(
+                r,
+                str(ham_dir),
+                str(rec_dir),
+            )
         )
+
+    built_records = [f.result() for f in ham_futures]
+
+    qaoa_records = []
+    for r in built_records:
+        qaoa_records.append(
+            run_qaoa_task(r, str(rec_dir))
+        )
+
+    all_traces = []
+
+    for r in qaoa_records:
+        traces = patch_traces(
+            patch_nodes=r.patch_nodes,
+            phi=r.phi,
+            bitstring=r.bitstring,
+            patch_id=r.patch_id,
+            show_phi=False,
     )
+        all_traces.extend(traces)
 
-    return futures
-
+# ---- ONE combined plot ----
+    fig_all = combined_figure(
+        all_traces,
+        title="All patches – selected nodes",
+)
+    fig_all.show()
 
 if __name__ == "__main__":
     mesh_hamiltonian_pipeline("data/sample.dxf")
