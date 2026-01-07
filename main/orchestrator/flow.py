@@ -56,15 +56,15 @@ def build_hamiltonian_task(record: PatchRecord, ham_dir: str, rec_dir: str):
         phi=phi,
         r=record.patch_nodes,
         neighbors=[],
-        L=1.0,
-        alpha=0.1,
-        gamma=1.0,
+        L=0.8,
+        alpha=0.3,
+        gamma=0.9,
         use_sparsity=True,
         N=max(1, len(phi)//2),   # target number of selected nodes
         mu=0.5, 
         use_repulsion=True,
-        d_min=0.05,
-        eta=0.4,                                
+        d_min=0.01,
+        eta=0.1,                                
 )
 
 
@@ -111,7 +111,7 @@ def visualize_task(record: PatchRecord):
 def mesh_hamiltonian_pipeline(
     dxf_path: str,
     L: float = 0.4,
-    Q_max: int = 9,
+    Q_max: int = 13,
 ):
     ctx = get_run_context()
     run_id = str(ctx.flow_run.id)
