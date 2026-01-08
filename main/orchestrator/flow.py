@@ -64,7 +64,9 @@ def build_hamiltonian_task(record: PatchRecord, ham_dir: str, rec_dir: str):
         mu=0.5, 
         use_repulsion=True,
         d_min=0.01,
-        eta=0.1,                                
+        eta=0.1,  
+        use_bend=True,
+        kappa=1.0                              
 )
 
 
