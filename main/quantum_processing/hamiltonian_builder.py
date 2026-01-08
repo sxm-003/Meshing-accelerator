@@ -13,6 +13,26 @@ def pauli_ZZ(n,k,l):
     p[l] = "Z"
     return "".join(p)
     
+def build_neighbor_pairs(neighbors):
+    """
+    neighbors: list of (i, j)
+    returns: dict i -> list of neighbor pairs (j, k)
+    """
+    from collections import defaultdict
+    adj = defaultdict(list)
+
+    for i, j in neighbors:
+        adj[i].append(j)
+        adj[j].append(i)
+
+    bend_pairs = []
+    for i, nbrs in adj.items():
+        for a in range(len(nbrs)):
+            for b in range(a+1, len(nbrs)):
+                bend_pairs.append((i, nbrs[a], nbrs[b]))
+
+    return bend_pairs
+
 def phi_circle_field(nodes, R=1.0):
     x = nodes[:, 0]
     y = nodes[:, 1]
@@ -88,7 +108,34 @@ def repulsion_penalty_strings(r, d_min, eta):
 
     return terms
 
+def bend_penalty_strings(r, bend_triples, kappa):
+    """
+    r: node coordinates
+    bend_triples: (i, j, k) with j,k neighbors of i
+    kappa: weight
+    """
+    n = len(r)
+    terms = {}
 
+    for i, j, k in bend_triples:
+        rij = np.linalg.norm(np.array(r[j]) - np.array(r[i]))
+        rik = np.linalg.norm(np.array(r[k]) - np.array(r[i]))
+        rjk = np.linalg.norm(np.array(r[j]) - np.array(r[k]))
+
+        w = (rij**2 + rik**2 - rjk**2)**2
+        if w == 0:
+            continue
+
+        # distribute as ZZ terms
+        for a, b in [(i, j), (i, k), (j, k)]:
+            zz = pauli_ZZ(n, a, b)
+            terms[zz] = terms.get(zz, 0.0) + kappa * w / 12
+
+            for q in (a, b):
+                z = pauli_Z(n, q)
+                terms[z] = terms.get(z, 0.0) - kappa * w / 12
+
+    return terms
 
 
 def hamiltonian_builder(
@@ -104,6 +151,9 @@ def hamiltonian_builder(
     use_repulsion=False,
     d_min=None,
     eta=0.0,
+    use_bend=False,
+    kappa=1.0
+
 ):
 
 
@@ -128,6 +178,10 @@ def hamiltonian_builder(
         for p, c in repulsion_penalty_strings(r, d_min, eta).items():
             H_terms[p] = H_terms.get(p, 0.0) + c
 
+    if use_bend:
+        bend_triples = build_neighbor_pairs(neighbors)
+        for p, c in bend_penalty_strings(r, bend_triples, kappa).items():
+            H_terms[p] = H_terms.get(p, 0.0) + c
   
     paulis = list(H_terms.keys())
     coeffs = list(H_terms.values())
