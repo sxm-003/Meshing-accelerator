@@ -32,7 +32,7 @@ def domain_penalty_strings(phi, alpha):
      return terms
 
  
-def shape_penalty_strings(r, neighbors, L, gamma):
+def spacing_penalty_strings(r, neighbors, L, gamma):
     n = len(r)
     terms = {}
 
@@ -87,6 +87,9 @@ def repulsion_penalty_strings(r, d_min, eta):
             terms[vals_z] = terms.get(vals_z, 0.0) - eta * w_kl / 4
 
     return terms
+
+
+
 
 def hamiltonian_builder(
     phi,
