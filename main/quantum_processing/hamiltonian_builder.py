@@ -113,7 +113,7 @@ def hamiltonian_builder(
     for p, c in domain_penalty_strings(phi, alpha).items():
         H_terms[p] = H_terms.get(p, 0.0) + c
 
-    for p, c in shape_penalty_strings(r, neighbors, L, gamma).items():
+    for p, c in spacing_penalty_strings(r, neighbors, L, gamma).items():
         H_terms[p] = H_terms.get(p, 0.0) + c
 
     if use_sparsity:
