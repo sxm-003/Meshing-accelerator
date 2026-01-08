@@ -55,14 +55,13 @@ def build_hamiltonian_task(record: PatchRecord, ham_dir: str, rec_dir: str):
     H = hamiltonian_builder(
         phi=phi,
         r=record.patch_nodes,
-        neighbors=[],
         L=0.8,
         alpha=0.3,
         gamma=0.9,
         use_sparsity=True,
         N=max(1, len(phi)//2),   # target number of selected nodes
         mu=0.5, 
-        use_repulsion=True,
+        use_repulsion=False,
         d_min=0.01,
         eta=0.1,  
         use_bend=True,

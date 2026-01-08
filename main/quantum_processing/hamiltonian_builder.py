@@ -12,26 +12,62 @@ def pauli_ZZ(n,k,l):
     p[k] = "Z"
     p[l] = "Z"
     return "".join(p)
-    
-def build_neighbor_pairs(neighbors):
+
+
+def build_all_pairs(n):
     """
-    neighbors: list of (i, j)
-    returns: dict i -> list of neighbor pairs (j, k)
+    n: number of nodes
+
+    returns:
+        list of (i, j) with i < j
     """
-    from collections import defaultdict
-    adj = defaultdict(list)
+    return list(combinations(range(n), 2))
 
-    for i, j in neighbors:
-        adj[i].append(j)
-        adj[j].append(i)
 
-    bend_pairs = []
-    for i, nbrs in adj.items():
-        for a in range(len(nbrs)):
-            for b in range(a+1, len(nbrs)):
-                bend_pairs.append((i, nbrs[a], nbrs[b]))
+def build_radius_bend_triples(r, radius, max_degree=8):
+    """
+    r: array of shape (n, 2) – node coordinates
+    radius: interaction radius
+    max_degree: cap neighbors per node to keep locality
 
-    return bend_pairs
+    returns:
+        list of (i, j, k) triples
+        meaning: j and k are local neighbors of i
+    """
+    n = len(r)
+
+    # Step 1: find local neighbors per node
+    neighbors = [[] for _ in range(n)]
+
+    dists = []
+    for i in range(n):
+        for j in range(i + 1, n):
+            d = np.linalg.norm(r[i] - r[j])
+            if d <= radius:
+                dists.append((d, i, j))
+
+    dists.sort()
+
+    degree = [0] * n
+    for _, i, j in dists:
+        if degree[i] < max_degree and degree[j] < max_degree:
+            neighbors[i].append(j)
+            neighbors[j].append(i)
+            degree[i] += 1
+            degree[j] += 1
+
+    # Step 2: build bend triples
+    bend_triples = []
+    for i in range(n):
+        nbrs = neighbors[i]
+        if len(nbrs) < 2:
+            continue
+        for j, k in combinations(nbrs, 2):
+            bend_triples.append((i, j, k))
+
+    return bend_triples
+
+
 
 def phi_circle_field(nodes, R=1.0):
     x = nodes[:, 0]
@@ -141,7 +177,6 @@ def bend_penalty_strings(r, bend_triples, kappa):
 def hamiltonian_builder(
     phi,
     r,
-    neighbors,
     L,
     alpha,
     gamma,
@@ -159,11 +194,13 @@ def hamiltonian_builder(
 
     n = len(phi)
     H_terms = {}
+    neighbors_3 = build_radius_bend_triples(r, 1.3*L)
+    neighbors_2 = build_all_pairs(n)
 
     for p, c in domain_penalty_strings(phi, alpha).items():
         H_terms[p] = H_terms.get(p, 0.0) + c
 
-    for p, c in spacing_penalty_strings(r, neighbors, L, gamma).items():
+    for p, c in spacing_penalty_strings(r, neighbors_2, L, gamma).items():
         H_terms[p] = H_terms.get(p, 0.0) + c
 
     if use_sparsity:
@@ -179,8 +216,7 @@ def hamiltonian_builder(
             H_terms[p] = H_terms.get(p, 0.0) + c
 
     if use_bend:
-        bend_triples = build_neighbor_pairs(neighbors)
-        for p, c in bend_penalty_strings(r, bend_triples, kappa).items():
+        for p, c in bend_penalty_strings(r, neighbors_3, kappa).items():
             H_terms[p] = H_terms.get(p, 0.0) + c
   
     paulis = list(H_terms.keys())
