@@ -107,12 +107,19 @@ def visualize_task(record: PatchRecord):
 
 
 @flow(task_runner=DaskTaskRunner( 
-    cluster_kwargs={"n_workers": 40, "threads_per_worker": 1}
-    ))
+    cluster_kwargs={
+        "n_workers": 8,  # Reduced from 40 - more realistic for local machine
+        "threads_per_worker": 2,  # Better CPU utilization
+        "processes": True,
+        "memory_limit": "auto",  # Prevent memory exhaustion
+        "timeout": "60s",  # Longer timeout for communication
+        "death_timeout": "120s",  # More time before declaring worker dead
+    }
+))
 def mesh_hamiltonian_pipeline(
     dxf_path: str,
     L: float = 0.4,
-    Q_max: int = 13,
+    Q_max: int = 1000,
 ):
     ctx = get_run_context()
     run_id = str(ctx.flow_run.id)
