@@ -13,6 +13,67 @@ def pauli_ZZ(n,k,l):
     p[l] = "Z"
     return "".join(p)
 
+
+def build_all_pairs(n):
+    """
+    n: number of nodes
+
+    returns:
+        list of (i, j) with i < j
+    """
+    return list(combinations(range(n), 2))
+
+
+def build_radius_bend_triples(r, radius, max_degree=8):
+    """
+    r: array of shape (n, 2) – node coordinates
+    radius: interaction radius
+    max_degree: cap neighbors per node to keep locality
+
+    returns:
+        list of (i, j, k) triples
+        meaning: j and k are local neighbors of i
+    """
+    n = len(r)
+
+    # Step 1: find local neighbors per node
+    neighbors = [[] for _ in range(n)]
+
+    dists = []
+    for i in range(n):
+        for j in range(i + 1, n):
+            d = np.linalg.norm(r[i] - r[j])
+            if d <= radius:
+                dists.append((d, i, j))
+
+    dists.sort()
+
+    degree = [0] * n
+    for _, i, j in dists:
+        if degree[i] < max_degree and degree[j] < max_degree:
+            neighbors[i].append(j)
+            neighbors[j].append(i)
+            degree[i] += 1
+            degree[j] += 1
+
+    # Step 2: build bend triples
+    bend_triples = []
+    for i in range(n):
+        nbrs = neighbors[i]
+        if len(nbrs) < 2:
+            continue
+        for j, k in combinations(nbrs, 2):
+            bend_triples.append((i, j, k))
+
+    return bend_triples
+
+
+
+def phi_circle_field(nodes, R=1.0):
+    x = nodes[:, 0]
+    y = nodes[:, 1]
+    return np.sqrt(x*x + y*y) - R
+
 def domain_penalty_strings(phi, alpha):
      n = len(phi)
      terms = {}
@@ -27,7 +88,7 @@ def domain_penalty_strings(phi, alpha):
      return terms
 
  
-def shape_penalty_strings(r, neighbors, L, gamma):
+def spacing_penalty_strings(r, neighbors, L, gamma):
     n = len(r)
     terms = {}
 
@@ -79,14 +140,43 @@ def repulsion_penalty_strings(r, d_min, eta):
         
         for q in (k,l):
             vals_z = pauli_Z(n, q)
-            H_terms[vals_z] = H_terms.get(vals_z, 0.0) - eta * w / 4
+            terms[vals_z] = terms.get(vals_z, 0.0) - eta * w_kl / 4
 
     return terms
+
+def bend_penalty_strings(r, bend_triples, kappa):
+    """
+    r: node coordinates
+    bend_triples: (i, j, k) with j,k neighbors of i
+    kappa: weight
+    """
+    n = len(r)
+    terms = {}
+
+    for i, j, k in bend_triples:
+        rij = np.linalg.norm(np.array(r[j]) - np.array(r[i]))
+        rik = np.linalg.norm(np.array(r[k]) - np.array(r[i]))
+        rjk = np.linalg.norm(np.array(r[j]) - np.array(r[k]))
+
+        w = (rij**2 + rik**2 - rjk**2)**2
+        if w == 0:
+            continue
+
+        # distribute as ZZ terms
+        for a, b in [(i, j), (i, k), (j, k)]:
+            zz = pauli_ZZ(n, a, b)
+            terms[zz] = terms.get(zz, 0.0) + kappa * w / 12
+
+            for q in (a, b):
+                z = pauli_Z(n, q)
+                terms[z] = terms.get(z, 0.0) - kappa * w / 12
+
+    return terms
+
 
 def hamiltonian_builder(
     phi,
     r,
-    neighbors,
     L,
     alpha,
     gamma,
@@ -96,16 +186,21 @@ def hamiltonian_builder(
     use_repulsion=False,
     d_min=None,
     eta=0.0,
+    use_bend=False,
+    kappa=1.0
+
 ):
 
 
     n = len(phi)
     H_terms = {}
+    neighbors_3 = build_radius_bend_triples(r, 1.3*L)
+    neighbors_2 = build_all_pairs(n)
 
     for p, c in domain_penalty_strings(phi, alpha).items():
         H_terms[p] = H_terms.get(p, 0.0) + c
 
-    for p, c in shape_penalty_strings(r, neighbors, L, gamma).items():
+    for p, c in spacing_penalty_strings(r, neighbors_2, L, gamma).items():
         H_terms[p] = H_terms.get(p, 0.0) + c
 
     if use_sparsity:
@@ -120,6 +215,9 @@ def hamiltonian_builder(
         for p, c in repulsion_penalty_strings(r, d_min, eta).items():
             H_terms[p] = H_terms.get(p, 0.0) + c
 
+    if use_bend:
+        for p, c in bend_penalty_strings(r, neighbors_3, kappa).items():
+            H_terms[p] = H_terms.get(p, 0.0) + c
   
     paulis = list(H_terms.keys())
     coeffs = list(H_terms.values())
