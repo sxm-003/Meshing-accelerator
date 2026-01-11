@@ -55,17 +55,28 @@ def build_hamiltonian_task(record: PatchRecord, ham_dir: str, rec_dir: str):
     H = hamiltonian_builder(
         phi=phi,
         r=record.patch_nodes,
-        L=0.8,
-        alpha=0.3,
-        gamma=0.9,
+    # --- geometric scale ---
+        L=0.5,
+
+    # --- domain constraint ---
+        alpha=0.6,
+
+    # --- spacing ---
+        gamma=1.0,
+
+    # --- sparsity (DO NOT be too aggressive) ---
         use_sparsity=True,
-        N=max(1, len(phi)//2),   # target number of selected nodes
-        mu=0.5, 
-        use_repulsion=False,
-        d_min=0.01,
-        eta=0.1,  
+        N=int(0.65 * len(phi)),   # keep ~65% nodes
+        mu=0.25,
+
+    # --- short-range repulsion ---
+        use_repulsion=True,
+        d_min=0.125,           # = 0.125
+        eta=0.8,
+
+    # --- bend / angle preservation ---
         use_bend=True,
-        kappa=1.0                              
+        kappa=3.0
 )
 
 
@@ -108,7 +119,7 @@ def visualize_task(record: PatchRecord):
 
 @flow(task_runner=DaskTaskRunner( 
     cluster_kwargs={
-        "n_workers": 8,  
+        "n_workers": 16,  
         "threads_per_worker": 2, 
         "processes": True,
         "memory_limit": "auto",  
@@ -118,8 +129,8 @@ def visualize_task(record: PatchRecord):
 ))
 def mesh_hamiltonian_pipeline(
     dxf_path: str,
-    L: float = 0.4,
-    Q_max: int = 1000,
+    L: float = 0.5,
+    Q_max: int = 14,
 ):
     ctx = get_run_context()
     run_id = str(ctx.flow_run.id)

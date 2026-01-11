@@ -27,7 +27,7 @@ def patch_traces(
             mode="markers",
             marker=dict(
                 size=2,
-                color=phi if show_phi else "lightgray",
+                color=phi if show_phi else "black",
                 colorscale="Viridis",
                 showscale=show_phi,
             ),
