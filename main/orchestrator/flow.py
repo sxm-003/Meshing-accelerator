@@ -59,23 +59,23 @@ def build_hamiltonian_task(record: PatchRecord, ham_dir: str, rec_dir: str):
         L=0.5,
 
     # --- domain constraint ---
-        alpha=0.6,
+        alpha=10,
 
     # --- spacing ---
-        gamma=1.0,
+        gamma=0,
 
     # --- sparsity (DO NOT be too aggressive) ---
-        use_sparsity=True,
+        use_sparsity=False,
         N=int(0.65 * len(phi)),   # keep ~65% nodes
         mu=0.25,
 
     # --- short-range repulsion ---
-        use_repulsion=True,
+        use_repulsion=False,
         d_min=0.125,           # = 0.125
         eta=0.8,
 
     # --- bend / angle preservation ---
-        use_bend=True,
+        use_bend=False,
         kappa=3.0
 )
 
@@ -93,9 +93,10 @@ def build_hamiltonian_task(record: PatchRecord, ham_dir: str, rec_dir: str):
     return record
 
 @task(
-    tags=["qaoa-aer"],        # purely semantic
+    tags=["qaoa-aer"],
     retries=1,
     retry_delay_seconds=10,
+
 )
 def run_qaoa_task(record: PatchRecord, rec_dir: str):
     bitstring, energy = run_qaoa_aer(record.hamiltonian_path)
@@ -105,6 +106,7 @@ def run_qaoa_task(record: PatchRecord, rec_dir: str):
 
     record.save(rec_dir)
     return record
+
 
 @task
 def visualize_task(record: PatchRecord):
@@ -132,6 +134,8 @@ def mesh_hamiltonian_pipeline(
     L: float = 0.5,
     Q_max: int = 14,
 ):
+
+
     ctx = get_run_context()
     run_id = str(ctx.flow_run.id)
     
@@ -161,10 +165,13 @@ def mesh_hamiltonian_pipeline(
     built_records = [f.result() for f in ham_futures]
 
     qaoa_records = []
+    qaoa_futures = []
     for r in built_records:
-        qaoa_records.append(
-            run_qaoa_task(r, str(rec_dir))
+        qaoa_futures.append(
+            run_qaoa_task.submit(r, str(rec_dir))
         )
+    qaoa_records = [f.result() for f in qaoa_futures]
+
 
     all_traces = []
 
