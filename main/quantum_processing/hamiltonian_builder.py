@@ -110,17 +110,27 @@ def spacing_penalty_strings(r, neighbors, L, gamma):
 
     return terms
 
-def sparsity_penalty_strings(n, N, mu):
-    terms = {}
-    
-    h = mu * (N - 0.5)
-    for k in range(n):
-        vals_z = pauli_Z(n, k)
-        terms[vals_z] = terms.get(vals_z, 0) + h
 
-    for k, l in combinations(range(n), 2):
-        vals_zz = pauli_ZZ(n, k, l)
-        terms[vals_zz] = terms.get(vals_zz, 0) + mu / 2
+def sparsity_penalty_strings(n, N, mu):
+    """
+    Proper cardinality penalty:
+        mu * (sum x_i - N)^2
+    """
+    terms = {}
+
+    A = mu * (N - n/2)
+    B = mu / 2
+
+    # Linear Z terms
+    for i in range(n):
+        zi = pauli_Z(n, i)
+        terms[zi] = terms.get(zi, 0.0) + A
+
+    # Quadratic ZZ terms
+    for i in range(n):
+        for j in range(i+1, n):
+            zij = pauli_ZZ(n, i, j)
+            terms[zij] = terms.get(zij, 0.0) + B
 
     return terms
 
