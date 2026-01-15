@@ -8,7 +8,7 @@ from node_manager.patch_generator import generate_patch
 
 from quantum_processing.hamiltonian_builder import (
     hamiltonian_builder,
-    phi_circle_field,
+    phi_circle_field_local,
 )
 from orchestrator.patch_record import PatchRecord
 from prefect_dask.task_runners import DaskTaskRunner
@@ -50,17 +50,21 @@ def build_patch_records(nodes, patches):
 @task()
 def build_hamiltonian_task(record: PatchRecord, ham_dir: str, rec_dir: str):
 
-    record.phi = phi
-
+    center = np.array(record.patch_nodes).mean(axis=0),
+    dists = np.linalg.norm(np.array(record.patch_nodes) - center, axis=1),
+    R = np.percentile(dists, 80)
+    phi = phi_circle_field_local(record.patch_nodes, R=1.0)
+    band = 0.8* R
     H = hamiltonian_builder(
         phi=phi,
         r=record.patch_nodes,
+
     # --- geometric scale ---
         L=0.5,
 
     # --- domain constraint ---
         alpha=10,
-        band=0.05,
+        band=band,
 
     # --- spacing ---
         gamma=0,
@@ -77,7 +81,7 @@ def build_hamiltonian_task(record: PatchRecord, ham_dir: str, rec_dir: str):
 
     # --- bend / angle preservation ---
         use_bend=False,
-        kappa=3.0
+        kappa=3.0,
 )
 
 
