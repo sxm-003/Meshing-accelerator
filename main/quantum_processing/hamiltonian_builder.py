@@ -69,23 +69,12 @@ def build_radius_bend_triples(r, radius, max_degree=8):
 
 
 
-def phi_circle_field(nodes, R=1.0):
-    x = nodes[:, 0]
-    y = nodes[:, 1]
+def phi_circle_field_local(nodes, R):
+    center = nodes.mean(axis=0)
+    x = nodes[:,0] - center[0]
+    y = nodes[:,1] - center[1]
     return np.sqrt(x*x + y*y) - R
 
-def domain_penalty_strings(phi, alpha):
-     n = len(phi)
-     terms = {}
-
-     for i , phi_i in enumerate(phi):
-         coefficient = (alpha*max(phi_i,0)**2)/2
-         if coefficient == 0:
-             continue 
-
-         terms[pauli_Z(n,i)] = terms.get(pauli_Z(n,i),0) - coefficient 
-
-     return terms
 
  
 def spacing_penalty_strings(r, neighbors, L, gamma):
@@ -189,6 +178,7 @@ def hamiltonian_builder(
     r,
     L,
     alpha,
+    band,
     gamma,
     use_sparsity=False,
     N=None,
