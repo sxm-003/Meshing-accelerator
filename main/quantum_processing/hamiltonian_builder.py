@@ -67,6 +67,18 @@ def build_radius_bend_triples(r, radius, max_degree=8):
 
     return bend_triples
 
+def domain_penalty_strings(phi, alpha, band):
+    n = len(phi)
+    terms = {}
+
+    for i, phi_i in enumerate(phi):
+        g = max(phi_i + band, 0.0)
+        coeff = 0.5 * alpha * g * g
+
+        if coeff > 0:
+            terms[pauli_Z(n, i)] = terms.get(pauli_Z(n, i), 0) - coeff
+
+    return terms
 
 
 def phi_circle_field_local(nodes, R):
