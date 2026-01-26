@@ -154,6 +154,40 @@ def jittered_grid_shapely(polygons, L, jitter_frac=0.3, seed=0):
     return pts
 
 
+def uniform_grid_shapely(polygons, L, seed=0):
+    """
+    Generate uniform (non-jittered) grid nodes within polygons.
+    This is the preferred method as it provides more consistent and predictable node spacing.
+    """
+    np.random.seed(seed)
+
+    # Bounding box
+    minx, miny, maxx, maxy = polygons[0].bounds
+    for poly in polygons[1:]:
+        bx = poly.bounds
+        minx, miny = min(minx, bx[0]), min(miny, bx[1])
+        maxx, maxy = max(maxx, bx[2]), max(maxy, bx[3])
+
+    h = L / 2.0
+    xs = np.arange(minx, maxx + h, h)
+    ys = np.arange(miny, maxy + h, h)
+
+    pts = []
+    for x in xs:
+        for y in ys:
+            # No jitter - use pure uniform grid
+            p = Point(x, y)
+
+            # Use covers for robust point-in-polygon test
+            if any(poly.covers(p) for poly in polygons):
+                pts.append([p.x, p.y])
+
+    pts = np.array(pts, dtype=float)
+    if pts.size == 0:
+        return np.empty((0, 2))
+    return pts
+
+
 def sample_boundaries_shapely(polygons, spacing):
     boundary_pts = []
 
@@ -269,11 +303,10 @@ def generate_crude_nodes(path):
         spacing=0.1
     )
 
-    interior_nodes = adaptive_jittered_grid_shapely(
+    # Use UNIFORM GRID instead of jittered/adaptive
+    interior_nodes = uniform_grid_shapely(
         polygons,
-        L_bulk=0.4,
-        L_boundary=0.08,
-        boundary_band=0.35
+        L=0.4  # Characteristic length scale
     )
 
     nodes = np.vstack([
