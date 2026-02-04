@@ -277,22 +277,20 @@ def collinearity_penalty_strings(n, collinear_pairs, eta_col):
 
 
 def hamiltonian_builder(
-    phi,
-    r,
-    L,
-    alpha,
-    band,
-    gamma,
-    use_sparsity=False,
-    N=None,
-    mu=0.0,
-    use_repulsion=False,
-    d_min=None,
-    eta=0.0,
-    use_bend=False,
-    kappa=1.0
-
-):
+    phi,r,L,
+    alpha = 0, band = 0 , #domain
+    gamma = 0, #spacing
+    use_sparsity=False, N = None , mu = 0, #sparsity (count) penalty
+    use_repulsion=False, d_min = 0, eta = 100, # repulsion penalty 
+    use_bend=False, kappa=1.0, #bend penalty 
+    use_max_edge = False, d_max = 0 , eta_max = 0, # max edge length penalty 
+    use_density_field=False, density_radius=None, gamma_density=0.0, # density penalty for compactness
+    use_angular_bins=False, num_angular_bins=6, eta_theta=0.0, #angular bins penalty to get equailateral triangle behavious
+    use_colinearity_penalty=False, eta_col=0.0,#colinearity penalty 
+    use_boundary_alignment=False, boundary_nodes=None, beta=0.0, #boundary geometry preserving penalty( only for boundary nodes)
+    normalize=True,  # Enable normalization
+    tuning_factors=None,  #  Dict of tuning factors per penalty
+    ):
 
 
     n = len(phi)
