@@ -19,15 +19,6 @@ def pauli_ZZ(n,k,l):
     return "".join(p)
 
 
-def build_all_pairs(n):
-    """
-    n: number of nodes
-
-    returns:
-        list of (i, j) with i < j
-    """
-    return list(combinations(range(n), 2))
-
 
 def build_radius_bend_triples(r, radius, max_degree=8):
     """
