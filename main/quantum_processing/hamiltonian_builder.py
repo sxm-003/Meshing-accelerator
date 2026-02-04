@@ -3,9 +3,7 @@ from itertools import combinations
 from qiskit.quantum_info import SparsePauliOp
 
 
-# ============================================================
 # PAULI OPERATORS
-# ============================================================
 
 def pauli_Z(n,k):
     p = ["I"] * n
@@ -276,67 +274,6 @@ def collinearity_penalty_strings(n, collinear_pairs, eta_col):
     return terms
 
 
-def hamiltonian_builder_balanced(
-    phi,
-    r,
-    L,
-    target_node_count,
-    alpha=20,
-    band=0.5,
-    gamma=5,
-    kappa=200,
-    eta_max=10,
-    eta_col=0.005,
-    lam=0.009,
-    tuning_params=None
-):
-    """
-    Build Hamiltonian using BALANCED WEIGHT TUNING SYSTEM.
-    
-    Args:
-        phi: domain constraint values
-        r: node coordinates (list or array)
-        L: target edge length
-        target_node_count: target number of nodes
-        alpha, band, gamma, kappa, eta_max, eta_col, lam: penalty parameters
-        tuning_params: dict of individual tuning factors per penalty
-                      Default 1.0 = balanced, <1.0 = soften, >1.0 = strengthen
-    
-    Returns:
-        tuple: (SparsePauliOp, weights dict, penalty_contributions dict)
-    """
-    n = len(phi)
-    r = np.array(r)  # Convert to numpy array
-    
-    # Build all neighbor structures
-    neighbors_all_pairs = build_all_pairs(n)
-    neighbors_bend_triples = build_radius_bend_triples(r, 1.3*L)
-    neighbors_col = build_radius_neighbors(r, radius=1.5*L)
-    collinear_pairs = build_collinear_pairs(r, neighbors_col, cos_thresh=0.85)
-    
-    # Calculate all penalty contributions
-    penalty_contributions = {
-        'Domain': domain_penalty_strings(phi, alpha=alpha, band=band),
-        'Spacing': spacing_penalty_strings(r, neighbors_all_pairs, L, gamma=gamma),
-        'Bend': bend_penalty_strings(r, neighbors_bend_triples, kappa=kappa),
-        'MaxEdge': max_edge_penalty_strings(r, d_max=1.2*L, eta=eta_max),
-        'Sparsity': count_penalty_strings(n, target_node_count, lam=lam),
-        'Collinearity': collinearity_penalty_strings(n, collinear_pairs, eta_col=eta_col),
-        'Repulsion': {},
-        'Density': {}
-    }
-    
-    # Calculate balanced weights with tuning
-    weights, _ = calculate_balanced_weights(penalty_contributions, tuning_params)
-    
-    # Apply weights and combine
-    H_terms = apply_weighted_hamiltonian(penalty_contributions, weights)
-    
-    # Convert to SparsePauliOp
-    paulis = list(H_terms.keys())
-    coeffs = list(H_terms.values())
-    
-    return SparsePauliOp(paulis, coeffs), weights, penalty_contributions
 
 
 def hamiltonian_builder(
