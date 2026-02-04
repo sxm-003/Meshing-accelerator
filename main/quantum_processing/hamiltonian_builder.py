@@ -295,10 +295,20 @@ def hamiltonian_builder(
 
     n = len(phi)
     H_terms = {}
-    neighbors_3 = build_radius_bend_triples(r, 1.3*L)
-    neighbors_2 = build_all_pairs(n)
+    default_tuning = {
+        'domain': 1.0, 'spacing': 1.0, 'sparsity': 1.0, 'bend': 1.0,
+        'max_edge': 1.0, 'density': 1.0, 'angular_bins': 1.0,
+        'collinearity': 1.0, 'boundary_alignment': 1.0
+    }
 
-    for p, c in domain_penalty_strings(phi, alpha).items():
+    neighbors_dict = build_radius_neighbors(r, radius=3*L)
+    neighbor_pairs = []
+    for i in neighbors_dict:
+        for j in neighbors_dict[i]:
+            if i < j:
+                neighbor_pairs.append((i, j))
+
+    for p, c in domain_penalty_strings(phi, alpha,band).items():
         H_terms[p] = H_terms.get(p, 0.0) + c
 
     for p, c in spacing_penalty_strings(r, neighbors_2, L, gamma).items():
@@ -319,6 +329,9 @@ def hamiltonian_builder(
     if use_bend:
         for p, c in bend_penalty_strings(r, neighbors_3, kappa).items():
             H_terms[p] = H_terms.get(p, 0.0) + c
+
+
+
   
     paulis = list(H_terms.keys())
     coeffs = list(H_terms.values())
