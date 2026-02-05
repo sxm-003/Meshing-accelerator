@@ -273,6 +273,52 @@ def collinearity_penalty_strings(n, collinear_pairs, eta_col):
 
     return terms
 
+def compute_angular_bins(r, num_bins=6):
+    """Partition nodes into angular bins around center"""
+    r = np.array(r)
+    center = r.mean(axis=0)
+    
+    # Compute angles from center
+    angles = np.arctan2(r[:, 1] - center[1], r[:, 0] - center[0])
+    angles = (angles + np.pi) / (2 * np.pi)  # Normalize to [0, 1]
+    
+    # Assign to bins
+    bin_indices = (angles * num_bins).astype(int) % num_bins
+    
+    # Group nodes by bin
+    bins = [[] for _ in range(num_bins)]
+    for i, bin_id in enumerate(bin_indices):
+        bins[bin_id].append(i)
+    
+    return bins
+
+def angular_bins_penalty_strings(r, num_bins, eta_theta):
+    """Penalize unbalanced angular distribution"""
+    n = len(r)
+    terms = {}
+    
+    bins = compute_angular_bins(r, num_bins=num_bins)
+    
+    # Target: each bin should have ~n/num_bins nodes
+    target_per_bin = n / num_bins
+    
+    # Add penalty for imbalanced bins
+    for bin_idx, bin_nodes in enumerate(bins):
+        # Penalty = (count_in_bin - target)^2
+        for i in bin_nodes:
+            for j in bin_nodes:
+                if i >= j:
+                    continue
+                w = eta_theta * (len(bin_nodes) - target_per_bin)**2 / (4 * num_bins)
+                zz = pauli_ZZ(n, i, j)
+                terms[zz] = terms.get(zz, 0.0) + w / 4
+                
+                z_i = pauli_Z(n, i)
+                z_j = pauli_Z(n, j)
+                terms[z_i] = terms.get(z_i, 0.0) - w / 8
+                terms[z_j] = terms.get(z_j, 0.0) - w / 8
+    
+    return terms
 
 
 
@@ -294,12 +340,18 @@ def hamiltonian_builder(
 
 
     n = len(phi)
+
     H_terms = {}
+
+#Penalty coefficient tuning 
     default_tuning = {
         'domain': 1.0, 'spacing': 1.0, 'sparsity': 1.0, 'bend': 1.0,
         'max_edge': 1.0, 'density': 1.0, 'angular_bins': 1.0,
         'collinearity': 1.0, 'boundary_alignment': 1.0
     }
+    if tuning_factors is not None:
+        default_tuning.update(tuning_factors)
+    tuning = default_tuning
 
     neighbors_dict = build_radius_neighbors(r, radius=3*L)
     neighbor_pairs = []
@@ -308,34 +360,33 @@ def hamiltonian_builder(
             if i < j:
                 neighbor_pairs.append((i, j))
 
-    for p, c in domain_penalty_strings(phi, alpha,band).items():
-        H_terms[p] = H_terms.get(p, 0.0) + c
+    untuned_penalties = {}
 
-    for p, c in spacing_penalty_strings(r, neighbors_2, L, gamma).items():
-        H_terms[p] = H_terms.get(p, 0.0) + c
+    untuned_penalties['domain'] = domain_penalty_strings(phi, alpha, band)
 
-    if use_sparsity:
-        if N is None:
-            raise ValueError("N must be provided when use_sparsity=True")
-        for p, c in sparsity_penalty_strings(n, N, mu).items():
-            H_terms[p] = H_terms.get(p, 0.0) + c
+    untuned_penalties['spacing'] = spacing_penalty_strings(r, neighbor_pairs, L, gamma)
+
+    if use_sparsity and N is not None:
+        untuned_penalties['sparsity'] = sparsity_penalty_strings(n, N, mu)
 
     if use_repulsion:
-        if d_min is None:
-            raise ValueError("d_min must be provided when use_repulsion=True")
-        for p, c in repulsion_penalty_strings(r, d_min, eta).items():
-            H_terms[p] = H_terms.get(p, 0.0) + c
+        untuned_penalties['repulsion'] = repulsion_penalty_strings(r, d_min, eta)
 
     if use_bend:
-        for p, c in bend_penalty_strings(r, neighbors_3, kappa).items():
-            H_terms[p] = H_terms.get(p, 0.0) + c
+        radius = 3*L
+        bend_triples = build_radius_bend_triples(r, radius)
+        untuned_penalties['bend'] = bend_penalty_strings(r, bend_triples, kappa)
+
+    if use_max_edge:
+        untuned_penalties['max_edge'] = max_edge_penalty_strings(r, d_max, eta_max)
+
+    if use_density_field and density_radius is not None:
+        density_field = phi_circle_field_local(r, density_radius)
+        untuned_penalties['density'] = domain_penalty_strings(density_field, gamma_density, 0)
+
+    uf use_angular_bins:
 
 
 
-  
-    paulis = list(H_terms.keys())
-    coeffs = list(H_terms.values())
-
-    return SparsePauliOp(paulis, coeffs)
 
 
