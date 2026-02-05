@@ -494,6 +494,8 @@ def hamiltonian_builder(
             untuned_penalties['collinearity'] = collinearity_penalty_strings(n, collinear_pairs, eta_col)
 
     if use_boundary_alignment and boundary_nodes is not None:
+        boundary_normals = compute_boundary_normals(r, boundary_nodes, k=4)
+        untuned_penalties['boundary_alignment'] = boundary_alignment_penalty_strings(r, boundary_nodes, boundary_normals, neighbors_dict, beta)
 
 
 
