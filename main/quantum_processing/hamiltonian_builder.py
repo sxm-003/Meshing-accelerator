@@ -498,6 +498,12 @@ def hamiltonian_builder(
         untuned_penalties['boundary_alignment'] = boundary_alignment_penalty_strings(r, boundary_nodes, boundary_normals, neighbors_dict, beta)
 
 
-
+    penalty_norms = {}
+    for name, terms in untuned_penalties.items():
+        if terms:
+            norm = np.sqrt(sum(c**2 for c in terms.values()))
+            penalty_norms[name] = norm if norm > 1e-10 else 1.0
+        else:
+            penalty_norms[name] = 1.0
 
 
