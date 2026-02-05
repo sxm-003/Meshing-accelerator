@@ -5,6 +5,11 @@ import numpy as np
 
 from node_manager.crude_generator import generate_crude_nodes
 from node_manager.patch_generator import generate_patch
+from node_manager.gaussian_patch_merger import (
+    merge_patch_results_gaussian,
+    generate_patches_with_overlap,
+    prepare_patch_for_qaoa,
+)
 
 from quantum_processing.hamiltonian_builder import (
     hamiltonian_builder,
@@ -124,6 +129,67 @@ def visualize_task(record: PatchRecord):
     fig.show()
 
 
+@task
+def merge_patches_gaussian_task(qaoa_records, nodes, L):
+    """
+    Merge overlapping patch results using Gaussian-weighted interpolation.
+    
+    Args:
+        qaoa_records: List of PatchRecord objects with QAOA results
+        nodes: Full node set
+        L: Characteristic length scale for boundary threshold
+        
+    Returns:
+        merged_indices: Array of unique global node indices
+    """
+    print("\n" + "="*70)
+    print("GAUSSIAN PATCH MERGING")
+    print("="*70)
+    
+    # Convert PatchRecord objects to patch_results format
+    patch_results = []
+    for record in qaoa_records:
+        if not hasattr(record, 'bitstring') or record.bitstring is None:
+            continue
+            
+        # Parse bitstring to get selected nodes
+        bitstring = [int(b) for b in record.bitstring]
+        local_selected = [i for i, b in enumerate(bitstring) if b == 1]
+        
+        # Get patch indices (mapping from local to global)
+        # Assuming patch_nodes are stored and we can find their global indices
+        patch_indices = []
+        for node in record.patch_nodes:
+            # Find matching global index
+            dists = np.linalg.norm(nodes - node, axis=1)
+            closest_idx = np.argmin(dists)
+            if dists[closest_idx] < 1e-6:  # Ensure exact match
+                patch_indices.append(closest_idx)
+        
+        if len(patch_indices) > 0:
+            patch_result = {
+                'patch_id': record.patch_id,
+                'local_selected': local_selected,
+                'patch_indices': np.array(patch_indices),
+            }
+            patch_results.append(patch_result)
+    
+    # Merge using Gaussian weighting
+    boundary_threshold = L * 0.5
+    merged_indices = merge_patch_results_gaussian(
+        patch_results,
+        nodes,
+        boundary_threshold=boundary_threshold
+    )
+    
+    print(f"\n✓ Gaussian merging complete:")
+    print(f"  Input patches: {len(patch_results)}")
+    print(f"  Output nodes: {len(merged_indices)}")
+    print("="*70)
+    
+    return merged_indices
+
+
 @flow(task_runner=DaskTaskRunner( 
     cluster_kwargs={
         "n_workers": 16,  
@@ -138,8 +204,17 @@ def mesh_hamiltonian_pipeline(
     dxf_path: str,
     L: float = 0.5,
     Q_max: int = 14,
+    use_gaussian_merging: bool = True,
 ):
-
+    """
+    QAOA-based mesh optimization pipeline with optional Gaussian patch merging.
+    
+    Args:
+        dxf_path: Path to DXF file with mesh nodes
+        L: Characteristic length scale for patch generation
+        Q_max: Maximum qubits per patch
+        use_gaussian_merging: Enable Gaussian-weighted merging of overlapping patches
+    """
 
     ctx = get_run_context()
     run_id = str(ctx.flow_run.id)
@@ -177,7 +252,17 @@ def mesh_hamiltonian_pipeline(
         )
     qaoa_records = [f.result() for f in qaoa_futures]
 
+    # --- Gaussian patch merging (optional) ---
+    if use_gaussian_merging:
+        merged_indices = merge_patches_gaussian_task(qaoa_records, nodes, L)
+        print(f"\n✓ Merged mesh contains {len(merged_indices)} unique nodes")
+        
+        # Save merged indices
+        merged_path = base_dir / "merged_indices.npy"
+        np.save(merged_path, merged_indices)
+        print(f"✓ Saved merged indices to {merged_path}")
 
+    # --- Visualization ---
     all_traces = []
 
     for r in qaoa_records:
@@ -190,12 +275,18 @@ def mesh_hamiltonian_pipeline(
     )
         all_traces.extend(traces)
 
-# ---- ONE combined plot ----
+    # ---- ONE combined plot ----
     fig_all = combined_figure(
         all_traces,
         title="All patches – selected nodes",
-)
+    )
     fig_all.show()
+    
+    # Return merged indices if available
+    if use_gaussian_merging:
+        return merged_indices
+    else:
+        return qaoa_records
 
 if __name__ == "__main__":
     mesh_hamiltonian_pipeline("data/sample.dxf")
