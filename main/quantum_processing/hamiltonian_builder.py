@@ -506,4 +506,26 @@ def hamiltonian_builder(
         else:
             penalty_norms[name] = 1.0
 
+    for name, terms in untuned_penalties.items():
+        
+        if not terms:
+            continue
+        factor = tuning.get(name, 1.0)
+        norm = penalty_norms[name]
+
+        if normalize:
+            scale = factor / norm
+        else:
+            scale = factor
+
+        for key, coeff in terms.items():
+            H_terms[key] = H_terms.get(key, 0.0) + coeff * scale
+
+    pauli_keys = list(H_terms.keys())
+    pauli_coeffs = list(H_terms.values())
+
+    return SparsePauliOp(pauli_keys, pauli_coeffs)
+
+        
+
 
