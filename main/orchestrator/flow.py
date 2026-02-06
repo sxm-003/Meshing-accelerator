@@ -39,8 +39,17 @@ def generate_nodes_task(dxf_path):
 
 
 @task
-def generate_patches_task(nodes, L, Q_max):
-    return generate_patch(L, nodes, Q_max)
+def generate_patches_task(nodes, L, Q_max, overlap_factor=1.0):
+    """
+    Generate patches with configurable overlap.
+    
+    Args:
+        nodes: Node coordinates
+        L: Resolution / characteristic length
+        Q_max: Maximum qubits per patch
+        overlap_factor: Overlap control (0.0=no overlap, 1.0=standard, >1.0=more overlap)
+    """
+    return generate_patch(L, nodes, Q_max, overlap_factor=overlap_factor)
 
 
 @task
@@ -206,6 +215,7 @@ def mesh_hamiltonian_pipeline(
     dxf_path: str,
     L: float = 0.5,
     Q_max: int = 14,
+    overlap_factor: float = 1.0,
     use_gaussian_merging: bool = True,
 ):
     """
@@ -215,6 +225,7 @@ def mesh_hamiltonian_pipeline(
         dxf_path: Path to DXF file with mesh nodes
         L: Characteristic length scale for patch generation
         Q_max: Maximum qubits per patch
+        overlap_factor: Controls overlap between patches (0.0=no overlap, 1.0=standard, >1.0=more)
         use_gaussian_merging: Enable Gaussian-weighted merging of overlapping patches
     """
 
@@ -231,7 +242,7 @@ def mesh_hamiltonian_pipeline(
 
     # --- pipeline ---
     nodes = generate_nodes_task(dxf_path)
-    patches = generate_patches_task(nodes, L, Q_max)
+    patches = generate_patches_task(nodes, L, Q_max, overlap_factor=overlap_factor)
     records = build_patch_records(nodes, patches)
 
     ham_futures = []
