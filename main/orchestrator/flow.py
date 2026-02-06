@@ -108,13 +108,19 @@ def build_hamiltonian_task(record: PatchRecord, ham_dir: str, rec_dir: str):
         gamma_density=20,
     # angular distribution regularization
         use_angular_bins=False,
-        num_angular_bins=6
+        num_angular_bins=6,
         eta_theta=20,
     # collinearity regularization
-        use_colinearity_penalty=False,
+        use_collinearity_penalty=False,
         eta_col=20,
-
-)
+    # boundary alignment
+        use_boundary_alignment=False,
+        boundary_nodes=None,
+        beta=20,
+    # normalization and tuning
+        normalize=True,
+        tuning_factors=tuning_params
+        )
 
 
     ham_path = os.path.join(ham_dir, f"{record.patch_id}.npz")
