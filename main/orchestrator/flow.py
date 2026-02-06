@@ -31,8 +31,15 @@ from orchestrator.visualize_patch_output import (
 
 
 @task
-def generate_nodes_task(dxf_path):
-    nodes, *_ = generate_crude_nodes(dxf_path)
+def generate_nodes_task(dxf_path, jitter_factor=0.0):
+    """
+    Generate nodes from DXF file with optional jitter.
+    
+    Args:
+        dxf_path: Path to DXF file
+        jitter_factor: Random jitter (0.0=uniform grid, 1.0=full jitter)
+    """
+    nodes, *_ = generate_crude_nodes(dxf_path, jitter_factor=jitter_factor)
     return nodes
 
 
@@ -238,6 +245,7 @@ def mesh_hamiltonian_pipeline(
     L: float = 0.5,
     Q_max: int = 14,
     overlap_factor: float = 1.0,
+    jitter_factor: float = 0.0,
     use_gaussian_merging: bool = True,
 ):
     """
@@ -248,6 +256,7 @@ def mesh_hamiltonian_pipeline(
         L: Characteristic length scale for patch generation
         Q_max: Maximum qubits per patch
         overlap_factor: Controls overlap between patches (0.0=no overlap, 1.0=standard, >1.0=more)
+        jitter_factor: Random jitter for node generation (0.0=uniform grid, 1.0=full jitter)
         use_gaussian_merging: Enable Gaussian-weighted merging of overlapping patches
     """
 
@@ -263,7 +272,7 @@ def mesh_hamiltonian_pipeline(
     rec_dir.mkdir(parents=True, exist_ok=True)
 
     # --- pipeline ---
-    nodes = generate_nodes_task(dxf_path)
+    nodes = generate_nodes_task(dxf_path, jitter_factor=jitter_factor)
     patches = generate_patches_task(nodes, L, Q_max, overlap_factor=overlap_factor)
     records = build_patch_records(nodes, patches)
 
