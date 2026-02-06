@@ -433,7 +433,7 @@ def hamiltonian_builder(
     use_max_edge = False, d_max = 0 , eta_max = 0, # max edge length penalty 
     use_density_field=False, density_radius=None, gamma_density=0.0, # density penalty for compactness
     use_angular_bins=False, num_angular_bins=6, eta_theta=0.0, #angular bins penalty to get equailateral triangle behavious
-    use_colinearity_penalty=False, eta_col=0.0,#colinearity penalty 
+    use_collinearity_penalty=False, eta_col=0.0,#colinearity penalty 
     use_boundary_alignment=False, boundary_nodes=None, beta=0.0, #boundary geometry preserving penalty( only for boundary nodes)
     normalize=True,  # Enable normalization
     tuning_factors=None,  #  Dict of tuning factors per penalty
@@ -488,7 +488,7 @@ def hamiltonian_builder(
     if use_angular_bins and num_angular_bins > 0:
         untuned_penalties['angular_bins'] = angular_bins_penalty_strings(r, int(num_angular_bins), eta_theta)
 
-    if use_colinearity_penalty:
+    if use_collinearity_penalty:
         collinear_pairs = build_collinear_pairs(r, neighbors_dict)
         if collinear_pairs:
             untuned_penalties['collinearity'] = collinearity_penalty_strings(n, collinear_pairs, eta_col)

@@ -106,6 +106,13 @@ def build_hamiltonian_task(record: PatchRecord, ham_dir: str, rec_dir: str):
         use_density_field=False,
         density_radius= 0.5*L,
         gamma_density=20,
+    # angular distribution regularization
+        use_angular_bins=False,
+        num_angular_bins=6
+        eta_theta=20,
+    # collinearity regularization
+        use_colinearity_penalty=False,
+        eta_col=20,
 
 )
 
