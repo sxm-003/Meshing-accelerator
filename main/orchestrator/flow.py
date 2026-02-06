@@ -66,6 +66,8 @@ def build_hamiltonian_task(record: PatchRecord, ham_dir: str, rec_dir: str):
 
     center = np.array(record.patch_nodes).mean(axis=0),
     dists = np.linalg.norm(np.array(record.patch_nodes) - center, axis=1),
+    L = np.mean(np.linalg.norm(np.array(record.patch_nodes) - np.roll(np.array(record.patch_nodes), 
+                                                                      shift=1, axis=0),axis=1)),
     R = np.percentile(dists, 80)
     phi = phi_circle_field_local(record.patch_nodes, R=1.0)
     band = 0.8* R
@@ -80,27 +82,31 @@ def build_hamiltonian_task(record: PatchRecord, ham_dir: str, rec_dir: str):
         r=record.patch_nodes,
 
     # geometric scale
-        L=0.5,
-
+        L=L,
     #domain constraint 
         alpha=10,band=band,
-
     # spacing 
         gamma=0,
-
     #  sparsity 
         use_sparsity=False,
         N=int(0.9 * len(phi)),   
         mu=0.25,
-
     #  short-range repulsion 
         use_repulsion=False,
         d_min=0.125,          
         eta=0.8,
-
     #  bend / angle preservation 
         use_bend=False,
         kappa=3.0,
+    # max edge length
+        use_max_edge=False,
+        d_max=1.2*L,
+        eta_max=40,
+    # density regularization
+        use_density_field=False,
+        density_radius= 0.5*L,
+        gamma_density=20,
+
 )
 
 
