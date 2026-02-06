@@ -35,16 +35,32 @@ def generate_nodes_task(dxf_path, jitter_factor=0.0):
     """
     Generate nodes from DXF file with optional jitter.
     
+    Returns nodes and the global indices of CAD boundary nodes.
+    These are the nodes sampled directly on the DXF geometry boundary.
+    
     Args:
         dxf_path: Path to DXF file
         jitter_factor: Random jitter (0.0=uniform grid, 1.0=full jitter)
+    
+    Returns:
+        nodes: (N, 2) full node array
+        cad_boundary_idx: Global indices of CAD boundary nodes in the nodes array
     """
-    nodes, *_ = generate_crude_nodes(dxf_path, jitter_factor=jitter_factor)
-    return nodes
+    nodes, interior_nodes, offset_nodes, boundary_nodes = generate_crude_nodes(
+        dxf_path, jitter_factor=jitter_factor
+    )
+    
+    # CAD boundary nodes are stacked last: [interior, offset, boundary]
+    n_interior = len(interior_nodes)
+    n_offset = len(offset_nodes)
+    n_boundary = len(boundary_nodes)
+    cad_boundary_idx = np.arange(n_interior + n_offset, n_interior + n_offset + n_boundary)
+    
+    return nodes, cad_boundary_idx
 
 
 @task
-def generate_patches_task(nodes, L, Q_max, overlap_factor=1.0):
+def generate_patches_task(nodes, L, Q_max, overlap_factor=1.0, cad_boundary_idx=None):
     """
     Generate patches with configurable overlap.
     
@@ -53,18 +69,21 @@ def generate_patches_task(nodes, L, Q_max, overlap_factor=1.0):
         L: Resolution / characteristic length
         Q_max: Maximum qubits per patch
         overlap_factor: Overlap control (0.0=no overlap, 1.0=standard, >1.0=more overlap)
+        cad_boundary_idx: Global indices of CAD boundary nodes (from DXF geometry)
     """
-    return generate_patch(L, nodes, Q_max, overlap_factor=overlap_factor)
+    return generate_patch(L, nodes, Q_max, overlap_factor=overlap_factor,
+                          cad_boundary_idx=cad_boundary_idx)
 
 
 @task
 def build_patch_records(nodes, patches):
     """
-    Build patch records from patches, including boundary node detection.
+    Build patch records from patches, including CAD boundary node mapping.
     
     Args:
         nodes: Full node set
-        patches: List of patch dictionaries with interior_idx, halo_idx, boundary_idx_local
+        patches: List of patch dictionaries with interior_idx, halo_idx,
+                 and cad_boundary_idx_local (local indices of CAD boundary nodes)
     
     Returns:
         records: List of PatchRecord objects
@@ -82,8 +101,8 @@ def build_patch_records(nodes, patches):
         if len(patch_nodes) == 0:
             continue
         
-        # Get boundary node indices (local to patch)
-        boundary_idx_local = p.get("boundary_idx_local", None)
+        # Get CAD boundary node indices (local to patch)
+        boundary_idx_local = p.get("cad_boundary_idx_local", None)
         
         records.append(PatchRecord(
             patch_nodes=patch_nodes,
@@ -308,8 +327,9 @@ def mesh_hamiltonian_pipeline(
     rec_dir.mkdir(parents=True, exist_ok=True)
 
     # --- pipeline ---
-    nodes = generate_nodes_task(dxf_path, jitter_factor=jitter_factor)
-    patches = generate_patches_task(nodes, L, Q_max, overlap_factor=overlap_factor)
+    nodes, cad_boundary_idx = generate_nodes_task(dxf_path, jitter_factor=jitter_factor)
+    patches = generate_patches_task(nodes, L, Q_max, overlap_factor=overlap_factor,
+                                     cad_boundary_idx=cad_boundary_idx)
     records = build_patch_records(nodes, patches)
 
     ham_futures = []
