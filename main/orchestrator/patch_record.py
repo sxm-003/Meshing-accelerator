@@ -8,7 +8,8 @@ import os
 @dataclass
 class PatchRecord:
     patch_nodes: np.ndarray
-    phi: Optional[np.ndarray] = None   
+    phi: Optional[np.ndarray] = None
+    boundary_nodes_idx: Optional[np.ndarray] = None  # Local indices of boundary nodes
 
     patch_id: str = field(init=False)
     hamiltonian_path: Optional[str] = None
@@ -28,6 +29,7 @@ class PatchRecord:
                 "patch_id": self.patch_id,
                 "patch_nodes": self.patch_nodes.tolist(),
                 "phi": None if self.phi is None else self.phi.tolist(),
+                "boundary_nodes_idx": None if self.boundary_nodes_idx is None else self.boundary_nodes_idx.tolist(),
                 "hamiltonian_path": self.hamiltonian_path,
                 "bitstring": self.bitstring,
                 "energy": self.energy,
