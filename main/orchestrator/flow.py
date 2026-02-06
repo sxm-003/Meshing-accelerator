@@ -59,18 +59,47 @@ def generate_patches_task(nodes, L, Q_max, overlap_factor=1.0):
 
 @task
 def build_patch_records(nodes, patches):
+    """
+    Build patch records from patches, including boundary node detection.
+    
+    Args:
+        nodes: Full node set
+        patches: List of patch dictionaries with interior_idx, halo_idx, boundary_idx_local
+    
+    Returns:
+        records: List of PatchRecord objects
+    """
     records = []
     for p in patches:
-        interior = nodes[p["interior_idx"]]
-        if len(interior) == 0:
+        # Get interior and halo nodes
+        interior_idx = p["interior_idx"]
+        halo_idx = p.get("halo_idx", [])
+        
+        # Combine for full patch
+        all_idx = np.concatenate([interior_idx, halo_idx]) if len(halo_idx) > 0 else interior_idx
+        patch_nodes = nodes[all_idx]
+        
+        if len(patch_nodes) == 0:
             continue
-        records.append(PatchRecord(interior))
+        
+        # Get boundary node indices (local to patch)
+        boundary_idx_local = p.get("boundary_idx_local", None)
+        
+        records.append(PatchRecord(
+            patch_nodes=patch_nodes,
+            boundary_nodes_idx=boundary_idx_local
+        ))
     return records
 
 
 @task()
 def build_hamiltonian_task(record: PatchRecord, ham_dir: str, rec_dir: str):
-
+    """
+    Build Hamiltonian for a patch with optional boundary alignment penalty.
+    
+    If the patch contains boundary nodes, the boundary alignment penalty
+    will be automatically enabled to preserve boundary geometry.
+    """
     center = np.array(record.patch_nodes).mean(axis=0),
     dists = np.linalg.norm(np.array(record.patch_nodes) - center, axis=1),
     L = np.mean(np.linalg.norm(np.array(record.patch_nodes) - np.roll(np.array(record.patch_nodes), 
@@ -78,6 +107,13 @@ def build_hamiltonian_task(record: PatchRecord, ham_dir: str, rec_dir: str):
     R = np.percentile(dists, 80)
     phi = phi_circle_field_local(record.patch_nodes, R=1.0)
     band = 0.8* R
+
+    # Check if patch has boundary nodes
+    has_boundary = (record.boundary_nodes_idx is not None and 
+                   len(record.boundary_nodes_idx) > 0)
+    
+    # Enable boundary alignment if boundary nodes present
+    boundary_nodes = record.boundary_nodes_idx if has_boundary else None
 
     tuning_params = { 'domain': 1.0, 'spacing': 1.0, 'sparsity': 1.0, 'bend': 1.0,
         'max_edge': 1.0, 'density': 1.0, 'angular_bins': 1.0,
@@ -120,10 +156,10 @@ def build_hamiltonian_task(record: PatchRecord, ham_dir: str, rec_dir: str):
     # collinearity regularization
         use_collinearity_penalty=False,
         eta_col=20,
-    # boundary alignment
-        use_boundary_alignment=False,
-        boundary_nodes=None,
-        beta=20,
+    # boundary alignment (auto-enabled if boundary nodes present)
+        use_boundary_alignment=has_boundary,
+        boundary_nodes=boundary_nodes,
+        beta=50.0,  # Increased weight for boundary preservation
     # normalization and tuning
         normalize=True,
         tuning_factors=tuning_params
