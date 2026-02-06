@@ -52,49 +52,22 @@ def distances(points, center):
     diff = points - center
     return np.linalg.norm(diff, axis=1)
 
-def build_patches(nodes, centers, r_patch, r_halo, Q_max):
-    patches = []
-
-    for ci, C in enumerate(centers):
-        d = distances(nodes, C)
-
-        interior_idx = np.where(d <= r_patch)[0]
-        halo_idx = np.where((d > r_patch) & (d <= r_halo))[0]
-
-        # Enforce qubit limit
-        if len(interior_idx) > Q_max:
-            interior_idx = interior_idx[:Q_max]
-
-        patch = {
-            "center": C,
-            "interior_idx": interior_idx,
-            "halo_idx": halo_idx
-        }
-        patches.append(patch)
-
-    return patches
-
-def generate_patch(L, nodes, Q_max):
-    #L is resolution
-    r_patch, r_halo, d_min = compute_patch_radii(nodes, L, Q_max)
-    centers = generate_patch_centers(nodes, r_patch)
-    patches = build_patches(nodes, centers, r_patch, r_halo, Q_max)
-
-    return patches
-
-def generate_patches_with_overlap(nodes, centers, r_patch, r_halo, Q_max=None):
+def generate_patches_with_overlap(nodes, centers, r_patch, r_halo, Q_max=None, overlap_factor=1.0):
     """
     Generate patches with interior and halo regions for overlap handling.
     
-    This function is similar to build_patches but provides more control over
-    patch generation and includes patch_id for tracking.
+    This is the primary patch generation function with configurable overlap between patches.
     
     Args:
         nodes: (N, 2) array of node coordinates
         centers: (M, 2) array of patch center coordinates
         r_patch: Radius for interior nodes
-        r_halo: Radius for halo nodes (overlap region)
-        Q_max: Maximum nodes per patch (optional)
+        r_halo: Base radius for halo nodes (overlap region)
+        Q_max: Maximum nodes per patch (optional, enforces qubit limit)
+        overlap_factor: Controls the amount of overlap between patches (default 1.0)
+                       - 0.0: No overlap (halo = patch boundary)
+                       - 1.0: Standard overlap (halo = r_patch + r_int)
+                       - >1.0: Increased overlap for better merging
         
     Returns:
         patches: List of patch dictionaries with 'center', 'interior_idx', 'halo_idx', 'patch_id'
@@ -105,9 +78,15 @@ def generate_patches_with_overlap(nodes, centers, r_patch, r_halo, Q_max=None):
         # Compute distances from center to all nodes
         dists = np.linalg.norm(nodes - center, axis=1)
         
+        # Apply overlap factor to halo radius
+        # overlap_factor = 0 means no overlap (r_halo_effective = r_patch)
+        # overlap_factor = 1 means standard overlap
+        overlap_extension = (r_halo - r_patch) * overlap_factor
+        r_halo_effective = r_patch + overlap_extension
+        
         # Classify nodes as interior or halo
         interior_idx = np.where(dists <= r_patch)[0]
-        halo_idx = np.where((dists > r_patch) & (dists <= r_halo))[0]
+        halo_idx = np.where((dists > r_patch) & (dists <= r_halo_effective))[0]
         
         # Enforce qubit limit if specified
         if Q_max is not None and len(interior_idx) > Q_max:
@@ -124,6 +103,31 @@ def generate_patches_with_overlap(nodes, centers, r_patch, r_halo, Q_max=None):
         }
         patches.append(patch)
     
+    return patches
+
+
+def generate_patch(L, nodes, Q_max, overlap_factor=1.0):
+    """
+    Generate patches with configurable overlap for QAOA mesh optimization.
+    
+    Args:
+        L: Resolution / characteristic length scale
+        nodes: (N, 2) array of node coordinates
+        Q_max: Maximum qubits per patch (hardware constraint)
+        overlap_factor: Controls overlap between patches (default 1.0)
+                       - 0.0: No overlap
+                       - 1.0: Standard overlap
+                       - >1.0: Increased overlap
+    
+    Returns:
+        patches: List of patch dictionaries
+    """
+    r_patch, r_halo, d_min = compute_patch_radii(nodes, L, Q_max)
+    centers = generate_patch_centers(nodes, r_patch)
+    patches = generate_patches_with_overlap(
+        nodes, centers, r_patch, r_halo, Q_max, overlap_factor=overlap_factor
+    )
+
     return patches
 
 
