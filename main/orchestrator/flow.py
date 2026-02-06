@@ -5,9 +5,7 @@ import numpy as np
 
 from node_manager.crude_generator import generate_crude_nodes
 from node_manager.patch_generator import (
-    generate_patch,
-    generate_patches_with_overlap,
-)
+    generate_patch,)
 from node_manager.gaussian_patch_merger import (
     merge_patch_results_gaussian,
     prepare_patch_for_qaoa,
@@ -71,31 +69,36 @@ def build_hamiltonian_task(record: PatchRecord, ham_dir: str, rec_dir: str):
     R = np.percentile(dists, 80)
     phi = phi_circle_field_local(record.patch_nodes, R=1.0)
     band = 0.8* R
+
+    tuning_params = { 'domain': 1.0, 'spacing': 1.0, 'sparsity': 1.0, 'bend': 1.0,
+        'max_edge': 1.0, 'density': 1.0, 'angular_bins': 1.0,
+        'collinearity': 1.0, 'boundary_alignment': 1.0
+    }
+
     H = hamiltonian_builder(
         phi=phi,
         r=record.patch_nodes,
 
-    # --- geometric scale ---
+    # geometric scale
         L=0.5,
 
-    # --- domain constraint ---
-        alpha=10,
-        band=band,
+    #domain constraint 
+        alpha=10,band=band,
 
-    # --- spacing ---
+    # spacing 
         gamma=0,
 
-    # --- sparsity (DO NOT be too aggressive) ---
+    #  sparsity 
         use_sparsity=False,
-        N=int(0.65 * len(phi)),   # keep ~65% nodes
+        N=int(0.9 * len(phi)),   
         mu=0.25,
 
-    # --- short-range repulsion ---
+    #  short-range repulsion 
         use_repulsion=False,
-        d_min=0.125,           # = 0.125
+        d_min=0.125,          
         eta=0.8,
 
-    # --- bend / angle preservation ---
+    #  bend / angle preservation 
         use_bend=False,
         kappa=3.0,
 )
@@ -273,7 +276,7 @@ def mesh_hamiltonian_pipeline(
         # Save merged indices
         merged_path = base_dir / "merged_indices.npy"
         np.save(merged_path, merged_indices)
-        print(f"✓ Saved merged indices to {merged_path}")
+        print(f" Saved merged indices to {merged_path}")
 
     # --- Visualization ---
     all_traces = []
@@ -291,7 +294,7 @@ def mesh_hamiltonian_pipeline(
     # ---- ONE combined plot ----
     fig_all = combined_figure(
         all_traces,
-        title="All patches – selected nodes",
+        title="All patches: selected nodes",
     )
     fig_all.show()
     
