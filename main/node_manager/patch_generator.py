@@ -82,6 +82,51 @@ def generate_patch(L, nodes, Q_max):
 
     return patches
 
+def generate_patches_with_overlap(nodes, centers, r_patch, r_halo, Q_max=None):
+    """
+    Generate patches with interior and halo regions for overlap handling.
+    
+    This function is similar to build_patches but provides more control over
+    patch generation and includes patch_id for tracking.
+    
+    Args:
+        nodes: (N, 2) array of node coordinates
+        centers: (M, 2) array of patch center coordinates
+        r_patch: Radius for interior nodes
+        r_halo: Radius for halo nodes (overlap region)
+        Q_max: Maximum nodes per patch (optional)
+        
+    Returns:
+        patches: List of patch dictionaries with 'center', 'interior_idx', 'halo_idx', 'patch_id'
+    """
+    patches = []
+    
+    for ci, center in enumerate(centers):
+        # Compute distances from center to all nodes
+        dists = np.linalg.norm(nodes - center, axis=1)
+        
+        # Classify nodes as interior or halo
+        interior_idx = np.where(dists <= r_patch)[0]
+        halo_idx = np.where((dists > r_patch) & (dists <= r_halo))[0]
+        
+        # Enforce qubit limit if specified
+        if Q_max is not None and len(interior_idx) > Q_max:
+            # Sort by distance and take closest Q_max nodes
+            interior_dists = dists[interior_idx]
+            sorted_idx = np.argsort(interior_dists)
+            interior_idx = interior_idx[sorted_idx[:Q_max]]
+        
+        patch = {
+            "center": center,
+            "interior_idx": interior_idx,
+            "halo_idx": halo_idx,
+            "patch_id": ci
+        }
+        patches.append(patch)
+    
+    return patches
+
+
 def interactive_patch_view(nodes, patches, max_patches=100):
     fig = go.Figure()
 

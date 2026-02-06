@@ -4,10 +4,12 @@ import os
 import numpy as np
 
 from node_manager.crude_generator import generate_crude_nodes
-from node_manager.patch_generator import generate_patch
+from node_manager.patch_generator import (
+    generate_patch,
+    generate_patches_with_overlap,
+)
 from node_manager.gaussian_patch_merger import (
     merge_patch_results_gaussian,
-    generate_patches_with_overlap,
     prepare_patch_for_qaoa,
 )
 
