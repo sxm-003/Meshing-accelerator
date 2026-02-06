@@ -52,39 +52,15 @@ def distances(points, center):
     diff = points - center
     return np.linalg.norm(diff, axis=1)
 
-def identify_boundary_nodes_in_patch(patch_nodes, center, percentile=85):
-    """
-    Identify boundary nodes in a patch based on distance from center.
-    
-    Nodes in the outer percentile of distances are considered boundary nodes.
-    This is similar to the approach in Airfoil_QAOA notebook.
-    
-    Args:
-        patch_nodes: (N, 2) array of patch node coordinates
-        center: (2,) patch center coordinates
-        percentile: Distance percentile threshold (default 85)
-    
-    Returns:
-        boundary_idx: Local indices of boundary nodes within patch
-    """
-    if len(patch_nodes) == 0:
-        return np.array([], dtype=int)
-    
-    # Compute distances from patch center
-    dists = np.linalg.norm(patch_nodes - center, axis=1)
-    
-    # Nodes beyond the percentile threshold are boundary nodes
-    threshold = np.percentile(dists, percentile)
-    boundary_idx = np.where(dists >= threshold)[0]
-    
-    return boundary_idx
-
-
-def generate_patches_with_overlap(nodes, centers, r_patch, r_halo, Q_max=None, overlap_factor=1.0):
+def generate_patches_with_overlap(nodes, centers, r_patch, r_halo, Q_max=None,
+                                   overlap_factor=1.0, cad_boundary_idx=None):
     """
     Generate patches with interior and halo regions for overlap handling.
     
     This is the primary patch generation function with configurable overlap between patches.
+    For each patch, it also identifies which nodes are CAD boundary nodes (nodes that
+    lie on the actual DXF geometry boundary), so the boundary alignment penalty can
+    anchor the mesh to the CAD shape.
     
     Args:
         nodes: (N, 2) array of node coordinates
@@ -96,10 +72,18 @@ def generate_patches_with_overlap(nodes, centers, r_patch, r_halo, Q_max=None, o
                        - 0.0: No overlap (halo = patch boundary)
                        - 1.0: Standard overlap (halo = r_patch + r_int)
                        - >1.0: Increased overlap for better merging
+        cad_boundary_idx: Global indices of CAD boundary nodes (from DXF geometry).
+                         If provided, each patch will record which of its local nodes
+                         are on the CAD boundary.
         
     Returns:
-        patches: List of patch dictionaries with 'center', 'interior_idx', 'halo_idx', 'patch_id', 'boundary_idx'
+        patches: List of patch dictionaries with:
+            'center', 'interior_idx', 'halo_idx', 'patch_id',
+            'cad_boundary_idx_local' (local indices of CAD boundary nodes in this patch)
     """
+    # Convert to a set for fast O(1) membership lookup
+    cad_boundary_set = set(cad_boundary_idx) if cad_boundary_idx is not None else set()
+    
     patches = []
     
     for ci, center in enumerate(centers):
@@ -123,26 +107,32 @@ def generate_patches_with_overlap(nodes, centers, r_patch, r_halo, Q_max=None, o
             sorted_idx = np.argsort(interior_dists)
             interior_idx = interior_idx[sorted_idx[:Q_max]]
         
-        # Combine interior and halo for full patch
+        # Combine interior and halo for full patch (global indices)
         all_patch_idx = np.concatenate([interior_idx, halo_idx])
-        patch_nodes = nodes[all_patch_idx]
         
-        # Identify boundary nodes within this patch (local indices)
-        boundary_idx_local = identify_boundary_nodes_in_patch(patch_nodes, center, percentile=85)
+        # Find which patch nodes are CAD boundary nodes
+        # all_patch_idx contains global indices; check which are in cad_boundary_set
+        cad_boundary_local = []
+        if len(cad_boundary_set) > 0:
+            for local_i, global_i in enumerate(all_patch_idx):
+                if global_i in cad_boundary_set:
+                    cad_boundary_local.append(local_i)
+        
+        cad_boundary_local = np.array(cad_boundary_local, dtype=int) if cad_boundary_local else None
         
         patch = {
             "center": center,
             "interior_idx": interior_idx,
             "halo_idx": halo_idx,
             "patch_id": ci,
-            "boundary_idx_local": boundary_idx_local  # Local indices relative to patch nodes
+            "cad_boundary_idx_local": cad_boundary_local  # Local indices of CAD boundary nodes
         }
         patches.append(patch)
     
     return patches
 
 
-def generate_patch(L, nodes, Q_max, overlap_factor=1.0):
+def generate_patch(L, nodes, Q_max, overlap_factor=1.0, cad_boundary_idx=None):
     """
     Generate patches with configurable overlap for QAOA mesh optimization.
     
@@ -154,6 +144,7 @@ def generate_patch(L, nodes, Q_max, overlap_factor=1.0):
                        - 0.0: No overlap
                        - 1.0: Standard overlap
                        - >1.0: Increased overlap
+        cad_boundary_idx: Global indices of CAD boundary nodes (from DXF geometry)
     
     Returns:
         patches: List of patch dictionaries
@@ -161,7 +152,9 @@ def generate_patch(L, nodes, Q_max, overlap_factor=1.0):
     r_patch, r_halo, d_min = compute_patch_radii(nodes, L, Q_max)
     centers = generate_patch_centers(nodes, r_patch)
     patches = generate_patches_with_overlap(
-        nodes, centers, r_patch, r_halo, Q_max, overlap_factor=overlap_factor
+        nodes, centers, r_patch, r_halo, Q_max,
+        overlap_factor=overlap_factor,
+        cad_boundary_idx=cad_boundary_idx
     )
 
     return patches
