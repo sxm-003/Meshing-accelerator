@@ -154,10 +154,19 @@ def jittered_grid_shapely(polygons, L, jitter_frac=0.3, seed=0):
     return pts
 
 
-def uniform_grid_shapely(polygons, L, seed=0):
+def uniform_grid_shapely(polygons, L, jitter_factor=0.0, seed=0):
     """
-    Generate uniform (non-jittered) grid nodes within polygons.
-    This is the preferred method as it provides more consistent and predictable node spacing.
+    Generate uniform grid nodes within polygons with optional jitter.
+    
+    Args:
+        polygons: List of Shapely polygons
+        L: Characteristic length scale
+        jitter_factor: Amount of random jitter (0.0=no jitter, 1.0=full jitter)
+                      Jitter is applied as ±jitter_factor * h/2
+        seed: Random seed for reproducibility
+    
+    Returns:
+        pts: Array of node coordinates
     """
     np.random.seed(seed)
 
@@ -175,8 +184,15 @@ def uniform_grid_shapely(polygons, L, seed=0):
     pts = []
     for x in xs:
         for y in ys:
-            # No jitter - use pure uniform grid
-            p = Point(x, y)
+            # Apply jitter if specified
+            if jitter_factor > 0:
+                dx = (np.random.rand() - 0.5) * jitter_factor * h
+                dy = (np.random.rand() - 0.5) * jitter_factor * h
+            else:
+                dx = 0
+                dy = 0
+            
+            p = Point(x + dx, y + dy)
 
             # Use covers for robust point-in-polygon test
             if any(poly.covers(p) for poly in polygons):
@@ -287,7 +303,21 @@ def adaptive_jittered_grid_shapely(
 
     return np.array(pts)
 
-def generate_crude_nodes(path):
+def generate_crude_nodes(path, jitter_factor=0.0):
+    """
+    Generate nodes for mesh from DXF file using uniform grid with optional jitter.
+    
+    Args:
+        path: Path to DXF file
+        jitter_factor: Random jitter amount (0.0=uniform grid, 1.0=full jitter)
+                      Default 0.0 for consistent, reproducible meshes
+    
+    Returns:
+        nodes: Combined node array
+        interior_nodes: Interior grid nodes
+        offset_nodes: Offset boundary layer nodes
+        boundary_nodes: Boundary nodes
+    """
     msp = load_dxf(path)
     segments = extract_segments(msp)
     polygons = segments_to_polygons(segments)
@@ -303,10 +333,11 @@ def generate_crude_nodes(path):
         spacing=0.1
     )
 
-    # Use UNIFORM GRID instead of jittered/adaptive
+    # Use uniform grid with optional jitter
     interior_nodes = uniform_grid_shapely(
         polygons,
-        L=0.4  # Characteristic length scale
+        L=0.4,  # Characteristic length scale
+        jitter_factor=jitter_factor  # 0.0 = uniform, >0 = jittered
     )
 
     nodes = np.vstack([
