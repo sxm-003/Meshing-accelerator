@@ -52,6 +52,34 @@ def distances(points, center):
     diff = points - center
     return np.linalg.norm(diff, axis=1)
 
+def identify_boundary_nodes_in_patch(patch_nodes, center, percentile=85):
+    """
+    Identify boundary nodes in a patch based on distance from center.
+    
+    Nodes in the outer percentile of distances are considered boundary nodes.
+    This is similar to the approach in Airfoil_QAOA notebook.
+    
+    Args:
+        patch_nodes: (N, 2) array of patch node coordinates
+        center: (2,) patch center coordinates
+        percentile: Distance percentile threshold (default 85)
+    
+    Returns:
+        boundary_idx: Local indices of boundary nodes within patch
+    """
+    if len(patch_nodes) == 0:
+        return np.array([], dtype=int)
+    
+    # Compute distances from patch center
+    dists = np.linalg.norm(patch_nodes - center, axis=1)
+    
+    # Nodes beyond the percentile threshold are boundary nodes
+    threshold = np.percentile(dists, percentile)
+    boundary_idx = np.where(dists >= threshold)[0]
+    
+    return boundary_idx
+
+
 def generate_patches_with_overlap(nodes, centers, r_patch, r_halo, Q_max=None, overlap_factor=1.0):
     """
     Generate patches with interior and halo regions for overlap handling.
@@ -70,7 +98,7 @@ def generate_patches_with_overlap(nodes, centers, r_patch, r_halo, Q_max=None, o
                        - >1.0: Increased overlap for better merging
         
     Returns:
-        patches: List of patch dictionaries with 'center', 'interior_idx', 'halo_idx', 'patch_id'
+        patches: List of patch dictionaries with 'center', 'interior_idx', 'halo_idx', 'patch_id', 'boundary_idx'
     """
     patches = []
     
@@ -95,11 +123,19 @@ def generate_patches_with_overlap(nodes, centers, r_patch, r_halo, Q_max=None, o
             sorted_idx = np.argsort(interior_dists)
             interior_idx = interior_idx[sorted_idx[:Q_max]]
         
+        # Combine interior and halo for full patch
+        all_patch_idx = np.concatenate([interior_idx, halo_idx])
+        patch_nodes = nodes[all_patch_idx]
+        
+        # Identify boundary nodes within this patch (local indices)
+        boundary_idx_local = identify_boundary_nodes_in_patch(patch_nodes, center, percentile=85)
+        
         patch = {
             "center": center,
             "interior_idx": interior_idx,
             "halo_idx": halo_idx,
-            "patch_id": ci
+            "patch_id": ci,
+            "boundary_idx_local": boundary_idx_local  # Local indices relative to patch nodes
         }
         patches.append(patch)
     
