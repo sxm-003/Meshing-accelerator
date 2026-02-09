@@ -26,6 +26,9 @@ from orchestrator.visualize_patch_output import (
     combined_figure,
     single_patch_figure,
 )
+import matplotlib
+matplotlib.use("Agg")          # non-interactive backend safe for Dask workers
+import matplotlib.pyplot as plt
 
 
 
@@ -146,7 +149,7 @@ def build_hamiltonian_task(record: PatchRecord, ham_dir: str, rec_dir: str):
         'collinearity': 1.0, 'boundary_alignment': 1.0
     }
 
-    H = hamiltonian_builder(
+    H, decomposition = hamiltonian_builder(
         phi=phi,
         r=record.patch_nodes,
 
@@ -188,8 +191,13 @@ def build_hamiltonian_task(record: PatchRecord, ham_dir: str, rec_dir: str):
         beta=50.0,  # Increased weight for boundary preservation
     # normalization and tuning
         normalize=True,
-        tuning_factors=tuning_params
+        tuning_factors=tuning_params,
+    # return per-penalty breakdown for visualization
+        return_decomposition=True,
         )
+
+    record.phi = phi
+    record.decomposition = decomposition
 
 
     ham_path = os.path.join(ham_dir, f"{record.patch_id}.npz")
@@ -200,9 +208,134 @@ def build_hamiltonian_task(record: PatchRecord, ham_dir: str, rec_dir: str):
         coeffs=H.coeffs,
     )
 
+    # Save decomposition alongside Hamiltonian for later visualization
+    decomp_path = os.path.join(ham_dir, f"{record.patch_id}_decomp.npz")
+    np.savez(
+        decomp_path,
+        penalty_names=list(decomposition['scaled_norms'].keys()),
+        scaled_norms=list(decomposition['scaled_norms'].values()),
+        raw_norms=list(decomposition['penalty_norms'].values()),
+        tuning_factors=[decomposition['tuning_factors'].get(k, 1.0)
+                        for k in decomposition['scaled_norms'].keys()],
+        n_qubits=decomposition['n_qubits'],
+    )
+
     record.hamiltonian_path = ham_path
     record.save(rec_dir)
     return record
+
+
+@task
+def visualize_hamiltonian_coefficients(built_records, base_dir: str):
+    """
+    Produce a 4-panel Hamiltonian coefficient breakdown figure
+    (matching the style in updated_energy_func_test_ENHANCED.ipynb).
+
+    Aggregates decomposition data across all patches and saves
+    the figure to <base_dir>/hamiltonian_coefficients.png.
+    """
+    # --- Collect decomposition data from all records ---
+    all_scaled_norms = {}   # penalty_name -> list of norms across patches
+    all_raw_norms = {}
+    all_tuning = {}
+    all_coeffs_by_penalty = {}   # penalty_name -> flat list of |coeff|
+    total_qubits = []
+
+    for rec in built_records:
+        decomp = getattr(rec, 'decomposition', None)
+        if decomp is None:
+            continue
+        total_qubits.append(decomp['n_qubits'])
+        for name, norm in decomp['scaled_norms'].items():
+            all_scaled_norms.setdefault(name, []).append(norm)
+        for name, norm in decomp['penalty_norms'].items():
+            all_raw_norms.setdefault(name, []).append(norm)
+        for name, tf in decomp['tuning_factors'].items():
+            all_tuning[name] = tf
+        for name, terms in decomp['scaled_penalties'].items():
+            all_coeffs_by_penalty.setdefault(name, []).extend(
+                np.abs(list(terms.values()))
+            )
+
+    if not all_scaled_norms:
+        print("  ⚠ No decomposition data — skipping Hamiltonian viz.")
+        return
+
+    # Averages across patches
+    names = sorted(all_scaled_norms.keys())
+    avg_scaled = [np.mean(all_scaled_norms[n]) for n in names]
+    avg_raw = [np.mean(all_raw_norms.get(n, [0])) for n in names]
+    tuning_vals = [all_tuning.get(n, 1.0) for n in names]
+
+    fig, axes = plt.subplots(2, 2, figsize=(16, 12))
+    colors = plt.cm.Set3(np.linspace(0, 1, len(names)))
+
+    # ── Panel 1: Scaled contribution norms (bar chart) ──
+    ax = axes[0, 0]
+    bars = ax.bar(names, avg_scaled, color=colors, edgecolor='black', linewidth=1.5)
+    ax.set_ylabel('Norm of Scaled Coefficients', fontsize=11, fontweight='bold')
+    ax.set_title('Penalty Contribution Magnitudes (normalised + tuned)',
+                 fontsize=12, fontweight='bold')
+    ax.grid(True, alpha=0.3, axis='y')
+    for bar, val in zip(bars, avg_scaled):
+        ax.text(bar.get_x() + bar.get_width() / 2., bar.get_height(),
+                f'{val:.3f}', ha='center', va='bottom', fontsize=9, fontweight='bold')
+    ax.tick_params(axis='x', rotation=45)
+
+    # ── Panel 2: Number of Pauli terms per penalty ──
+    ax = axes[0, 1]
+    term_counts = [len(all_coeffs_by_penalty.get(n, [])) for n in names]
+    bars = ax.bar(names, term_counts, color=colors, edgecolor='black', linewidth=1.5)
+    ax.set_ylabel('Number of Pauli Terms (all patches)', fontsize=11, fontweight='bold')
+    ax.set_title('Total Generated Pauli Strings per Penalty',
+                 fontsize=12, fontweight='bold')
+    ax.grid(True, alpha=0.3, axis='y')
+    for bar, cnt in zip(bars, term_counts):
+        ax.text(bar.get_x() + bar.get_width() / 2., bar.get_height(),
+                f'{int(cnt)}', ha='center', va='bottom', fontsize=9, fontweight='bold')
+    ax.tick_params(axis='x', rotation=45)
+
+    # ── Panel 3: Raw vs Scaled norms (grouped bar) ──
+    ax = axes[1, 0]
+    x = np.arange(len(names))
+    width = 0.35
+    ax.bar(x - width / 2, avg_raw, width, label='Raw (untuned) Norm',
+           color='steelblue', alpha=0.8, edgecolor='black')
+    ax.bar(x + width / 2, avg_scaled, width, label='Scaled (normalised + tuned)',
+           color='coral', alpha=0.8, edgecolor='black')
+    ax.set_ylabel('Norm Value', fontsize=11, fontweight='bold')
+    ax.set_title('Raw vs Scaled Contribution Norms', fontsize=12, fontweight='bold')
+    ax.set_xticks(x)
+    ax.set_xticklabels(names, rotation=45, ha='right')
+    ax.legend(fontsize=10)
+    ax.grid(True, alpha=0.3, axis='y')
+
+    # ── Panel 4: Coefficient magnitude histogram ──
+    ax = axes[1, 1]
+    flat_coeffs = []
+    for n in names:
+        flat_coeffs.extend(all_coeffs_by_penalty.get(n, []))
+    if flat_coeffs:
+        arr = np.array(flat_coeffs)
+        ax.hist(arr, bins=40, color='steelblue', edgecolor='black', alpha=0.7)
+        ax.set_xlabel('|Coefficient| Magnitude', fontsize=11, fontweight='bold')
+        ax.set_ylabel('Frequency', fontsize=11, fontweight='bold')
+        ax.set_title('Distribution of Coefficient Magnitudes (all patches)',
+                     fontsize=12, fontweight='bold')
+        ax.grid(True, alpha=0.3, axis='y')
+        stats_text = (f'Mean: {arr.mean():.4f}\n'
+                      f'Std:  {arr.std():.4f}\n'
+                      f'Max:  {arr.max():.4f}')
+        ax.text(0.98, 0.97, stats_text, transform=ax.transAxes, fontsize=10,
+                verticalalignment='top', horizontalalignment='right',
+                bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
+
+    plt.tight_layout()
+    out_path = os.path.join(base_dir, "hamiltonian_coefficients.png")
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+    print(f"\n✓ Hamiltonian coefficient breakdown saved to {out_path}")
+
 
 @task(
     tags=["qaoa-aer"],
@@ -351,13 +484,13 @@ def mesh_hamiltonian_pipeline(
 
     built_records = [f.result() for f in ham_futures]
 
+    # QAOA tasks run SEQUENTIALLY — Aer's statevector simulator uses
+    # internal OpenMP / BLAS parallelism that conflicts with Dask's
+    # multiprocess workers (deadlocks, silent failures, or GIL contention).
+    # Hamiltonian building remains parallel via Dask above.
     qaoa_records = []
-    qaoa_futures = []
     for r in built_records:
-        qaoa_futures.append(
-            run_qaoa_task.submit(r, str(rec_dir))
-        )
-    qaoa_records = [f.result() for f in qaoa_futures]
+        qaoa_records.append(run_qaoa_task(r, str(rec_dir)))
 
     # --- Gaussian patch merging (optional) ---
     if use_gaussian_merging:
@@ -368,6 +501,9 @@ def mesh_hamiltonian_pipeline(
         merged_path = base_dir / "merged_indices.npy"
         np.save(merged_path, merged_indices)
         print(f" Saved merged indices to {merged_path}")
+
+    # --- Hamiltonian coefficient visualization ---
+    visualize_hamiltonian_coefficients(built_records, str(base_dir))
 
     # --- Visualization ---
     all_traces = []
