@@ -119,10 +119,10 @@ def build_hamiltonian_task(record: PatchRecord, ham_dir: str, rec_dir: str):
     If the patch contains boundary nodes, the boundary alignment penalty
     will be automatically enabled to preserve boundary geometry.
     """
-    center = np.array(record.patch_nodes).mean(axis=0),
-    dists = np.linalg.norm(np.array(record.patch_nodes) - center, axis=1),
+    center = np.array(record.patch_nodes).mean(axis=0)
+    dists = np.linalg.norm(np.array(record.patch_nodes) - center, axis=1)
     L = np.mean(np.linalg.norm(np.array(record.patch_nodes) - np.roll(np.array(record.patch_nodes), 
-                                                                      shift=1, axis=0),axis=1)),
+                                                                      shift=1, axis=0),axis=1))
     R = np.percentile(dists, 80)
     phi = phi_circle_field_local(record.patch_nodes, R=1.0)
     band = 0.8* R
@@ -150,7 +150,7 @@ def build_hamiltonian_task(record: PatchRecord, ham_dir: str, rec_dir: str):
     # spacing 
         gamma=0,
     #  sparsity 
-        use_sparsity=False,
+        use_sparsity=True,
         N=int(0.9 * len(phi)),   
         mu=0.25,
     #  short-range repulsion 
@@ -158,22 +158,22 @@ def build_hamiltonian_task(record: PatchRecord, ham_dir: str, rec_dir: str):
         d_min=0.125,          
         eta=0.8,
     #  bend / angle preservation 
-        use_bend=False,
+        use_bend=True,
         kappa=3.0,
     # max edge length
-        use_max_edge=False,
+        use_max_edge=True,
         d_max=1.2*L,
         eta_max=40,
     # density regularization
-        use_density_field=False,
+        use_density_field=True,
         density_radius= 0.5*L,
         gamma_density=20,
     # angular distribution regularization
-        use_angular_bins=False,
+        use_angular_bins=True,
         num_angular_bins=6,
         eta_theta=20,
     # collinearity regularization
-        use_collinearity_penalty=False,
+        use_collinearity_penalty=True,
         eta_col=20,
     # boundary alignment (auto-enabled if boundary nodes present)
         use_boundary_alignment=has_boundary,
