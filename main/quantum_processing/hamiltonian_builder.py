@@ -454,6 +454,7 @@ def hamiltonian_builder(
     use_boundary_alignment=False, boundary_nodes=None, beta=0.0, #boundary geometry preserving penalty( only for boundary nodes)
     normalize=True,  # Enable normalization
     tuning_factors=None,  #  Dict of tuning factors per penalty
+    return_decomposition=False,  # Return per-penalty breakdown for visualization
     ):
 
 
@@ -541,7 +542,33 @@ def hamiltonian_builder(
     pauli_keys = list(H_terms.keys())
     pauli_coeffs = list(H_terms.values())
 
-    return SparsePauliOp(pauli_keys, pauli_coeffs)
+    H = SparsePauliOp(pauli_keys, pauli_coeffs)
+
+    if return_decomposition:
+        # Build per-penalty scaled contributions (after normalization + tuning)
+        scaled_penalties = {}
+        scaled_norms = {}
+        for name, terms in untuned_penalties.items():
+            if not terms:
+                continue
+            factor = tuning.get(name, 1.0)
+            norm = penalty_norms[name]
+            scale = (factor / norm) if normalize else factor
+            scaled = {k: v * scale for k, v in terms.items()}
+            scaled_penalties[name] = scaled
+            scaled_norms[name] = np.sqrt(sum(c**2 for c in scaled.values()))
+
+        decomposition = {
+            'untuned_penalties': untuned_penalties,
+            'penalty_norms': penalty_norms,         # raw norms before scaling
+            'scaled_penalties': scaled_penalties,    # after normalization + tuning
+            'scaled_norms': scaled_norms,            # norms after scaling
+            'tuning_factors': dict(tuning),
+            'n_qubits': n,
+        }
+        return H, decomposition
+
+    return H
 
         
 
