@@ -15,6 +15,7 @@ class PatchRecord:
     hamiltonian_path: Optional[str] = None
     bitstring: Optional[str] = None
     energy: Optional[float] = None
+    decomposition: Optional[dict] = field(default=None, repr=False)  # Hamiltonian penalty breakdown
 
     def __post_init__(self):
         arr = np.asarray(self.patch_nodes).round(6)
