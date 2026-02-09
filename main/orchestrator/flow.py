@@ -108,6 +108,13 @@ def build_patch_records(nodes, patches):
             patch_nodes=patch_nodes,
             boundary_nodes_idx=boundary_idx_local
         ))
+    
+    # Diagnostic: show patch qubit counts so user can verify Q_max is respected
+    sizes = [len(r.patch_nodes) for r in records]
+    if sizes:
+        print(f"\n  Patch summary: {len(records)} patches, "
+              f"qubit counts: min={min(sizes)}, max={max(sizes)}, "
+              f"avg={np.mean(sizes):.1f}")
     return records
 
 
