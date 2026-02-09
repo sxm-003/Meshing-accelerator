@@ -107,8 +107,23 @@ def generate_patches_with_overlap(nodes, centers, r_patch, r_halo, Q_max=None,
             sorted_idx = np.argsort(interior_dists)
             interior_idx = interior_idx[sorted_idx[:Q_max]]
         
+        # Cap total patch nodes (interior + halo) at Q_max.
+        # The Hamiltonian is built for ALL patch nodes as qubits, so the
+        # total must stay within Q_max to keep QAOA simulation tractable.
+        # (statevector simulation is O(2^n) — even n=30 is infeasible)
+        if Q_max is not None and len(halo_idx) > 0:
+            total = len(interior_idx) + len(halo_idx)
+            if total > Q_max:
+                remaining = Q_max - len(interior_idx)
+                if remaining > 0:
+                    halo_dists = dists[halo_idx]
+                    sorted_halo = np.argsort(halo_dists)
+                    halo_idx = halo_idx[sorted_halo[:remaining]]
+                else:
+                    halo_idx = np.array([], dtype=int)
+        
         # Combine interior and halo for full patch (global indices)
-        all_patch_idx = np.concatenate([interior_idx, halo_idx])
+        all_patch_idx = np.concatenate([interior_idx, halo_idx]) if len(halo_idx) > 0 else interior_idx
         
         # Find which patch nodes are CAD boundary nodes
         # all_patch_idx contains global indices; check which are in cad_boundary_set
