@@ -442,6 +442,7 @@ def mesh_hamiltonian_pipeline(
     overlap_factor: float = 1.0,
     jitter_factor: float = 0.0,
     use_gaussian_merging: bool = True,
+    parallel_qaoa: bool = False,
 ):
     """
     QAOA-based mesh optimization pipeline with optional Gaussian patch merging.
@@ -453,6 +454,9 @@ def mesh_hamiltonian_pipeline(
         overlap_factor: Controls overlap between patches (0.0=no overlap, 1.0=standard, >1.0=more)
         jitter_factor: Random jitter for node generation (0.0=uniform grid, 1.0=full jitter)
         use_gaussian_merging: Enable Gaussian-weighted merging of overlapping patches
+        parallel_qaoa: If True, dispatch QAOA tasks to Dask workers in parallel.
+                       If False (default), run QAOA sequentially to avoid Aer/OpenMP
+                       conflicts with Dask multiprocess workers.
     """
 
     ctx = get_run_context()
@@ -484,23 +488,36 @@ def mesh_hamiltonian_pipeline(
 
     built_records = [f.result() for f in ham_futures]
 
-    # QAOA tasks run SEQUENTIALLY — Aer's statevector simulator uses
-    # internal OpenMP / BLAS parallelism that conflicts with Dask's
-    # multiprocess workers (deadlocks, silent failures, or GIL contention).
-    # Hamiltonian building remains parallel via Dask above.
+    # QAOA — parallel or sequential based on user preference.
+    # Sequential avoids Aer/OpenMP conflicts with Dask multiprocess workers;
+    # parallel is faster but may deadlock on some systems.
     #
     # Strip the heavy decomposition dict before passing to QAOA — it only
     # needs hamiltonian_path and the decomposition would bloat every
     # serialize/deserialize round-trip for no reason.
     qaoa_records = []
-    for r in built_records:
-        r_light = PatchRecord(
-            patch_nodes=r.patch_nodes,
-            phi=r.phi,
-            boundary_nodes_idx=r.boundary_nodes_idx,
-        )
-        r_light.hamiltonian_path = r.hamiltonian_path
-        qaoa_records.append(run_qaoa_task(r_light, str(rec_dir)))
+    if parallel_qaoa:
+        qaoa_futures = []
+        for r in built_records:
+            r_light = PatchRecord(
+                patch_nodes=r.patch_nodes,
+                phi=r.phi,
+                boundary_nodes_idx=r.boundary_nodes_idx,
+            )
+            r_light.hamiltonian_path = r.hamiltonian_path
+            qaoa_futures.append(
+                run_qaoa_task.submit(r_light, str(rec_dir))
+            )
+        qaoa_records = [f.result() for f in qaoa_futures]
+    else:
+        for r in built_records:
+            r_light = PatchRecord(
+                patch_nodes=r.patch_nodes,
+                phi=r.phi,
+                boundary_nodes_idx=r.boundary_nodes_idx,
+            )
+            r_light.hamiltonian_path = r.hamiltonian_path
+            qaoa_records.append(run_qaoa_task(r_light, str(rec_dir)))
 
     # --- Gaussian patch merging (optional) ---
     if use_gaussian_merging:
