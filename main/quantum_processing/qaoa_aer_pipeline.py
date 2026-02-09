@@ -102,26 +102,17 @@ def run_qaoa_aer(
     optimization_method="SLSQP",
     maxiter=500,
     ftol=1e-6,
-    num_restarts=3,
 ):
     """
-    Complete QAOA pipeline with multi-restart (matches notebook behaviour).
-
-    Key differences from the old version:
-      • reps=4 (was 2)  – doubles circuit expressivity
-      • ftol=1e-6 (was 1e-3) – optimizer now converges properly
-      • random init params (was fixed [π, π/2, …])
-      • multi-restart: runs `num_restarts` attempts, keeps best
-      • primitives created per-call (safe for Dask workers)
+    Complete QAOA pipeline (single run, random init).
 
     Args:
         hamiltonian_path: Path to saved Hamiltonian (.npz)
         reps: QAOA layers (default 4)
         init_params: Initial parameters (default: random uniform [0, 2π])
         optimization_method: scipy method (default SLSQP)
-        maxiter: Max optimizer iterations per restart (default 500)
+        maxiter: Max optimizer iterations (default 500)
         ftol: Function tolerance (default 1e-6)
-        num_restarts: Number of random restarts (default 3)
 
     Returns:
         (best_bitstring, optimal_energy)
@@ -139,41 +130,31 @@ def run_qaoa_aer(
     num_qubits = hamiltonian.num_qubits
     n_params = 2 * reps
 
-    # Build & transpile ansatz (done once, reused across restarts)
+    # Build & transpile ansatz
     ansatz = ansatz_builder(hamiltonian, reps=reps)
     candidate_circuit = transpile_circuit(ansatz, simulator)
 
-    best_energy = float("inf")
-    best_params = None
-    total_evals = 0
+    # Random initialization unless explicitly provided
+    if init_params is None:
+        p0 = np.random.uniform(0, 2 * np.pi, size=n_params)
+    else:
+        p0 = np.asarray(init_params, dtype=float)
 
-    for attempt in range(num_restarts):
-        # Random initialization (matching notebook behaviour)
-        if init_params is not None and attempt == 0:
-            p0 = np.asarray(init_params, dtype=float)
-        else:
-            p0 = np.random.uniform(0, 2 * np.pi, size=n_params)
+    opt_params, opt_cost, n_evals = optimize_parameters(
+        p0, candidate_circuit, hamiltonian, estimator,
+        method=optimization_method, maxiter=maxiter, ftol=ftol,
+    )
 
-        opt_params, opt_cost, n_evals = optimize_parameters(
-            p0, candidate_circuit, hamiltonian, estimator,
-            method=optimization_method, maxiter=maxiter, ftol=ftol,
-        )
-        total_evals += n_evals
-
-        if opt_cost < best_energy:
-            best_energy = opt_cost
-            best_params = opt_params
-
-    # Sample from the best solution
-    distribution = sample_circuit(candidate_circuit, best_params, sampler)
+    # Sample from the optimised solution
+    distribution = sample_circuit(candidate_circuit, opt_params, sampler)
     best_bitstring = extract_best_bitstring(distribution, num_qubits)
 
     elapsed = time.time() - t0
     print(
-        f"  QAOA [{num_qubits}q, {reps}p, {num_restarts}×restart]: "
-        f"energy={best_energy:.6f}, evals={total_evals}, "
+        f"  QAOA [{num_qubits}q, {reps}p]: "
+        f"energy={opt_cost:.6f}, evals={n_evals}, "
         f"selected={sum(best_bitstring)}/{num_qubits} nodes, "
         f"time={elapsed:.1f}s"
     )
 
-    return best_bitstring, float(best_energy)
+    return best_bitstring, float(opt_cost)
