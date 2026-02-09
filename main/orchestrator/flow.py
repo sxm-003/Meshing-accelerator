@@ -488,9 +488,19 @@ def mesh_hamiltonian_pipeline(
     # internal OpenMP / BLAS parallelism that conflicts with Dask's
     # multiprocess workers (deadlocks, silent failures, or GIL contention).
     # Hamiltonian building remains parallel via Dask above.
+    #
+    # Strip the heavy decomposition dict before passing to QAOA — it only
+    # needs hamiltonian_path and the decomposition would bloat every
+    # serialize/deserialize round-trip for no reason.
     qaoa_records = []
     for r in built_records:
-        qaoa_records.append(run_qaoa_task(r, str(rec_dir)))
+        r_light = PatchRecord(
+            patch_nodes=r.patch_nodes,
+            phi=r.phi,
+            boundary_nodes_idx=r.boundary_nodes_idx,
+        )
+        r_light.hamiltonian_path = r.hamiltonian_path
+        qaoa_records.append(run_qaoa_task(r_light, str(rec_dir)))
 
     # --- Gaussian patch merging (optional) ---
     if use_gaussian_merging:
