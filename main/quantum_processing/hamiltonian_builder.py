@@ -3,6 +3,13 @@ from itertools import combinations
 from qiskit.quantum_info import SparsePauliOp
 
 
+def compute_distance_matrix(r):
+    """Precompute all pairwise distances using vectorized numpy."""
+    r = np.asarray(r, dtype=float)
+    diff = r[:, np.newaxis, :] - r[np.newaxis, :, :]
+    return np.sqrt((diff ** 2).sum(axis=-1))
+
+
 # PAULI OPERATORS
 
 def pauli_Z(n,k):
@@ -18,32 +25,33 @@ def pauli_ZZ(n,k,l):
 
 
 
-def build_radius_bend_triples(r, radius, max_degree=8):
+def build_radius_bend_triples(r, radius, max_degree=8, dmat=None):
     """
     r: array of shape (n, 2) – node coordinates
     radius: interaction radius
     max_degree: cap neighbors per node to keep locality
+    dmat: optional precomputed distance matrix (avoids redundant O(n^2) work)
 
     returns:
         list of (i, j, k) triples
         meaning: j and k are local neighbors of i
     """
     n = len(r)
+    if dmat is None:
+        dmat = compute_distance_matrix(r)
 
-    # Step 1: find local neighbors per node
+    # Step 1: find local neighbors per node (vectorized distance lookup)
+    triu_i, triu_j = np.triu_indices(n, k=1)
+    d = dmat[triu_i, triu_j]
+    mask = d <= radius
+    valid_idx = np.where(mask)[0]
+    sort_order = np.argsort(d[valid_idx])
+    valid_sorted = valid_idx[sort_order]
+
     neighbors = [[] for _ in range(n)]
-
-    dists = []
-    for i in range(n):
-        for j in range(i + 1, n):
-            d = np.linalg.norm(r[i] - r[j])
-            if d <= radius:
-                dists.append((d, i, j))
-
-    dists.sort()
-
     degree = [0] * n
-    for _, i, j in dists:
+    for idx in valid_sorted:
+        i, j = int(triu_i[idx]), int(triu_j[idx])
         if degree[i] < max_degree and degree[j] < max_degree:
             neighbors[i].append(j)
             neighbors[j].append(i)
@@ -179,14 +187,16 @@ def bend_penalty_strings(r, bend_triples, kappa):
     return terms
 
 
-def max_edge_penalty_strings(r, d_max, eta):
+def max_edge_penalty_strings(r, d_max, eta, dmat=None):
     """Penalize pairs of nodes that are too far apart"""
     n = len(r)
+    if dmat is None:
+        dmat = compute_distance_matrix(r)
     terms = {}
 
     for i in range(n):
         for j in range(i+1, n):
-            dij = np.linalg.norm(np.array(r[i]) - np.array(r[j]))
+            dij = dmat[i, j]
             if dij <= d_max:
                 continue
 
@@ -220,15 +230,22 @@ def count_penalty_strings(n, target_n, lam):
     return terms
 
 
-def build_radius_neighbors(r, radius):
-    """Build neighbor dictionary within radius"""
+def build_radius_neighbors(r, radius, dmat=None):
+    """Build neighbor dictionary within radius.
+    
+    Args:
+        r: node coordinates
+        radius: interaction radius
+        dmat: optional precomputed distance matrix
+    """
     n = len(r)
     neighbors = {}
-    r = np.array(r)
+    if dmat is None:
+        r = np.array(r)
+        dmat = compute_distance_matrix(r)
 
     for i in range(n):
-        dists = np.linalg.norm(r - r[i], axis=1)
-        neighbors[i] = np.where((dists < radius) & (dists > 0))[0].tolist()
+        neighbors[i] = np.where((dmat[i] < radius) & (dmat[i] > 0))[0].tolist()
 
     return neighbors
 
@@ -454,7 +471,8 @@ def hamiltonian_builder(
         default_tuning.update(tuning_factors)
     tuning = default_tuning
 
-    neighbors_dict = build_radius_neighbors(r, radius=3*L)
+    dmat = compute_distance_matrix(r)
+    neighbors_dict = build_radius_neighbors(r, radius=3*L, dmat=dmat)
     neighbor_pairs = []
     for i in neighbors_dict:
         for j in neighbors_dict[i]:
@@ -474,12 +492,11 @@ def hamiltonian_builder(
         untuned_penalties['repulsion'] = repulsion_penalty_strings(r, d_min, eta)
 
     if use_bend:
-        radius = 3*L
-        bend_triples = build_radius_bend_triples(r, radius)
+        bend_triples = build_radius_bend_triples(r, 3*L, dmat=dmat)
         untuned_penalties['bend'] = bend_penalty_strings(r, bend_triples, kappa)
 
     if use_max_edge:
-        untuned_penalties['max_edge'] = max_edge_penalty_strings(r, d_max, eta_max)
+        untuned_penalties['max_edge'] = max_edge_penalty_strings(r, d_max, eta_max, dmat=dmat)
 
     if use_density_field and density_radius is not None:
         density_field = phi_circle_field_local(r, density_radius)
