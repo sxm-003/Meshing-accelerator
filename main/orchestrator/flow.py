@@ -442,7 +442,7 @@ def mesh_hamiltonian_pipeline(
     overlap_factor: float = 1.0,
     jitter_factor: float = 0.0,
     use_gaussian_merging: bool = True,
-    parallel_qaoa: bool = False,
+    parallel_qaoa: bool = True,
 ):
     """
     QAOA-based mesh optimization pipeline with optional Gaussian patch merging.
