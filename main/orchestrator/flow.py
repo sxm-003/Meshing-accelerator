@@ -3,13 +3,18 @@ from prefect import flow, task
 import os
 import numpy as np
 
-from node_manager.crude_generator import generate_crude_nodes
+from node_manager.crude_generator import (
+    generate_crude_nodes,
+    load_dxf, extract_segments, segments_to_polygons,
+)
+from node_manager.adaptive_generator import generate_adaptive_nodes
 from node_manager.patch_generator import (
     generate_patch,)
 from node_manager.gaussian_patch_merger import (
     merge_patch_results_gaussian,
     prepare_patch_for_qaoa,
 )
+from node_manager.mesh_builder import build_and_save_mesh
 
 from quantum_processing.hamiltonian_builder import (
     hamiltonian_builder,
@@ -34,24 +39,38 @@ import matplotlib.pyplot as plt
 
 
 @task
-def generate_nodes_task(dxf_path, jitter_factor=0.0):
+def generate_nodes_task(dxf_path, jitter_factor=0.0, adaptive=False,
+                        L=None, L_fine=None, L_coarse=None,
+                        boundary_band=None, curvature_weight=0.5):
     """
-    Generate nodes from DXF file with optional jitter.
+    Generate nodes from DXF file.
     
-    Returns nodes and the global indices of CAD boundary nodes.
-    These are the nodes sampled directly on the DXF geometry boundary.
-    
-    Args:
-        dxf_path: Path to DXF file
-        jitter_factor: Random jitter (0.0=uniform grid, 1.0=full jitter)
+    Two modes:
+      - adaptive=False (default): uniform grid via generate_crude_nodes
+      - adaptive=True:  spatially varying density — finer near boundaries
+                        and high-curvature regions, coarser in interiors
     
     Returns:
         nodes: (N, 2) full node array
-        cad_boundary_idx: Global indices of CAD boundary nodes in the nodes array
+        cad_boundary_idx: Global indices of CAD boundary nodes
     """
-    nodes, interior_nodes, offset_nodes, boundary_nodes = generate_crude_nodes(
-        dxf_path, jitter_factor=jitter_factor
-    )
+    if adaptive:
+        nodes, interior_nodes, offset_nodes, boundary_nodes = generate_adaptive_nodes(
+            dxf_path,
+            L=L,
+            L_fine=L_fine,
+            L_coarse=L_coarse,
+            boundary_band=boundary_band,
+            curvature_weight=curvature_weight,
+            jitter_factor=jitter_factor,
+        )
+        print(f"\n  Adaptive node generation: {len(nodes)} nodes "
+              f"(interior={len(interior_nodes)}, offset={len(offset_nodes)}, "
+              f"boundary={len(boundary_nodes)})")
+    else:
+        nodes, interior_nodes, offset_nodes, boundary_nodes = generate_crude_nodes(
+            dxf_path, jitter_factor=jitter_factor
+        )
     
     # CAD boundary nodes are stacked last: [interior, offset, boundary]
     n_interior = len(interior_nodes)
@@ -429,6 +448,60 @@ def merge_patches_gaussian_task(qaoa_records, nodes, L):
     return merged_indices
 
 
+@task
+def build_mesh_task(nodes, merged_indices, dxf_path, output_dir,
+                    cad_boundary_idx=None, smooth_iterations=5,
+                    formats=("msh", "vtk", "obj")):
+    """
+    Triangulate selected nodes → Laplacian smooth → save mesh files.
+    
+    Args:
+        nodes: Full node set
+        merged_indices: Global indices of selected nodes from QAOA+merge
+        dxf_path: DXF path (for polygon extraction / triangle clipping)
+        output_dir: Where to save mesh files
+        cad_boundary_idx: Boundary node indices (fixed during smoothing)
+        smooth_iterations: Laplacian smoothing passes
+        formats: Export formats
+    
+    Returns:
+        mesh_info dict with nodes, triangles, quality, files
+    """
+    # Extract polygons for triangle filtering
+    msp = load_dxf(str(dxf_path))
+    polygons = None
+    if msp is not None:
+        segments = extract_segments(msp)
+        polygons = segments_to_polygons(segments)
+
+    mesh_info = build_and_save_mesh(
+        nodes=nodes,
+        selected_indices=merged_indices,
+        output_dir=output_dir,
+        polygons=polygons,
+        smooth_iterations=smooth_iterations,
+        boundary_node_indices=cad_boundary_idx,
+        formats=formats,
+    )
+
+    q = mesh_info["quality"]
+    print(f"\n" + "="*70)
+    print(f"MESH CREATED")
+    print(f"="*70)
+    print(f"  Nodes:            {q.get('n_nodes', '?')}")
+    print(f"  Elements:         {q.get('n_elements', '?')}")
+    print(f"  Min Angle:        {q.get('min_angle', '?'):.2f}°")
+    print(f"  Mean Min Angle:   {q.get('mean_min_angle', '?'):.2f}°")
+    print(f"  Mean Aspect Ratio:{q.get('mean_aspect_ratio', '?'):.3f}")
+    print(f"  Mean Skewness:    {q.get('mean_skewness', '?'):.4f}")
+    print(f"  Saved files:")
+    for fp in mesh_info["files"]:
+        print(f"    → {fp}")
+    print(f"="*70)
+
+    return mesh_info
+
+
 @flow(task_runner=DaskTaskRunner( 
     cluster_kwargs={
         "n_workers": 16,  
@@ -447,9 +520,17 @@ def mesh_hamiltonian_pipeline(
     jitter_factor: float = 0.0,
     use_gaussian_merging: bool = True,
     parallel_qaoa: bool = True,
+    adaptive_nodes: bool = False,
+    L_fine: float = None,
+    L_coarse: float = None,
+    curvature_weight: float = 0.5,
+    smooth_iterations: int = 5,
+    export_formats: tuple = ("msh", "vtk", "obj"),
 ):
     """
-    QAOA-based mesh optimization pipeline with optional Gaussian patch merging.
+    QAOA-based mesh optimization pipeline.
+    
+    Full pipeline: DXF → nodes → patches → Hamiltonians → QAOA → merge → mesh → export
     
     Args:
         dxf_path: Path to DXF file with mesh nodes
@@ -459,8 +540,14 @@ def mesh_hamiltonian_pipeline(
         jitter_factor: Random jitter for node generation (0.0=uniform grid, 1.0=full jitter)
         use_gaussian_merging: Enable Gaussian-weighted merging of overlapping patches
         parallel_qaoa: If True, dispatch QAOA tasks to Dask workers in parallel.
-                       If False (default), run QAOA sequentially to avoid Aer/OpenMP
-                       conflicts with Dask multiprocess workers.
+                       If False, run QAOA sequentially to avoid Aer/OpenMP conflicts.
+        adaptive_nodes: If True, use adaptive density node generation (finer near
+                       boundaries/curvature, coarser in interior). If False, uniform grid.
+        L_fine: Fine spacing for adaptive mode (auto from L if None)
+        L_coarse: Coarse spacing for adaptive mode (auto from L if None)
+        curvature_weight: How much boundary curvature affects node density (0..1)
+        smooth_iterations: Laplacian smoothing passes on final mesh (0=disable)
+        export_formats: Mesh file formats to export
     """
 
     ctx = get_run_context()
@@ -475,7 +562,15 @@ def mesh_hamiltonian_pipeline(
     rec_dir.mkdir(parents=True, exist_ok=True)
 
     # --- pipeline ---
-    nodes, cad_boundary_idx = generate_nodes_task(dxf_path, jitter_factor=jitter_factor)
+    nodes, cad_boundary_idx = generate_nodes_task(
+        dxf_path,
+        jitter_factor=jitter_factor,
+        adaptive=adaptive_nodes,
+        L=L,
+        L_fine=L_fine,
+        L_coarse=L_coarse,
+        curvature_weight=curvature_weight,
+    )
     patches = generate_patches_task(nodes, L, Q_max, overlap_factor=overlap_factor,
                                      cad_boundary_idx=cad_boundary_idx)
     records = build_patch_records(nodes, patches)
@@ -524,6 +619,7 @@ def mesh_hamiltonian_pipeline(
             qaoa_records.append(run_qaoa_task(r_light, str(rec_dir)))
 
     # --- Gaussian patch merging (optional) ---
+    mesh_info = None
     if use_gaussian_merging:
         merged_indices = merge_patches_gaussian_task(qaoa_records, nodes, L)
         print(f"\n✓ Merged mesh contains {len(merged_indices)} unique nodes")
@@ -531,7 +627,16 @@ def mesh_hamiltonian_pipeline(
         # Save merged indices
         merged_path = base_dir / "merged_indices.npy"
         np.save(merged_path, merged_indices)
-        print(f" Saved merged indices to {merged_path}")
+        print(f"  Saved merged indices to {merged_path}")
+
+        # --- Build final mesh: Delaunay triangulate → smooth → export ---
+        mesh_dir = base_dir / "mesh"
+        mesh_info = build_mesh_task(
+            nodes, merged_indices, dxf_path, str(mesh_dir),
+            cad_boundary_idx=cad_boundary_idx,
+            smooth_iterations=smooth_iterations,
+            formats=export_formats,
+        )
 
     # --- Hamiltonian coefficient visualization ---
     visualize_hamiltonian_coefficients(built_records, str(base_dir))
@@ -556,11 +661,15 @@ def mesh_hamiltonian_pipeline(
     )
     fig_all.show()
     
-    # Return merged indices if available
+    # Return results
     if use_gaussian_merging:
-        return merged_indices
+        return {
+            "merged_indices": merged_indices,
+            "mesh_info": mesh_info,
+            "qaoa_records": qaoa_records,
+        }
     else:
-        return qaoa_records
+        return {"qaoa_records": qaoa_records}
 
 if __name__ == "__main__":
     mesh_hamiltonian_pipeline("data/sample.dxf")
