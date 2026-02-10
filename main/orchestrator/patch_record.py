@@ -10,6 +10,7 @@ class PatchRecord:
     patch_nodes: np.ndarray
     phi: Optional[np.ndarray] = None
     boundary_nodes_idx: Optional[np.ndarray] = None  # Local indices of boundary nodes
+    global_indices: Optional[np.ndarray] = None       # Global indices into the full nodes array
 
     patch_id: str = field(init=False)
     hamiltonian_path: Optional[str] = None

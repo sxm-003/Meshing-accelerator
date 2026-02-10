@@ -109,7 +109,8 @@ def build_patch_records(nodes, patches):
         
         records.append(PatchRecord(
             patch_nodes=patch_nodes,
-            boundary_nodes_idx=boundary_idx_local
+            boundary_nodes_idx=boundary_idx_local,
+            global_indices=np.asarray(all_idx, dtype=np.intp),
         ))
     
     # Diagnostic: show patch qubit counts so user can verify Q_max is respected
@@ -391,15 +392,18 @@ def merge_patches_gaussian_task(qaoa_records, nodes, L):
         bitstring = [int(b) for b in record.bitstring]
         local_selected = [i for i, b in enumerate(bitstring) if b == 1]
         
-        # Get patch indices (mapping from local to global)
-        # Assuming patch_nodes are stored and we can find their global indices
-        patch_indices = []
-        for node in record.patch_nodes:
-            # Find matching global index
-            dists = np.linalg.norm(nodes - node, axis=1)
-            closest_idx = np.argmin(dists)
-            if dists[closest_idx] < 1e-6:  # Ensure exact match
-                patch_indices.append(closest_idx)
+        # Use stored global indices directly (O(1) lookup instead of O(P×N) search)
+        if record.global_indices is not None:
+            patch_indices = record.global_indices
+        else:
+            # Fallback: brute-force distance search (legacy path)
+            patch_indices = []
+            for node in record.patch_nodes:
+                dists = np.linalg.norm(nodes - node, axis=1)
+                closest_idx = np.argmin(dists)
+                if dists[closest_idx] < 1e-6:
+                    patch_indices.append(closest_idx)
+            patch_indices = np.array(patch_indices)
         
         if len(patch_indices) > 0:
             patch_result = {
