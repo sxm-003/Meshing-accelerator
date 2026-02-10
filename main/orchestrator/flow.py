@@ -24,6 +24,7 @@ from orchestrator.patch_record import PatchRecord
 from prefect_dask.task_runners import DaskTaskRunner
 from prefect.context import get_run_context
 from pathlib import Path
+from typing import Optional
 
 from quantum_processing.qaoa_aer_pipeline import run_qaoa_aer
 from orchestrator.visualize_patch_output import (
@@ -504,12 +505,12 @@ def build_mesh_task(nodes, merged_indices, dxf_path, output_dir,
 
 @flow(task_runner=DaskTaskRunner( 
     cluster_kwargs={
-        "n_workers": 16,  
+        "n_workers": 8,  
         "threads_per_worker": 2, 
         "processes": True,
         "memory_limit": "auto",  
-        "timeout": "60s",  
-        "death_timeout": "120s",  
+        "timeout": "120s",  
+        "death_timeout": "240s",  
     }
 ))
 def mesh_hamiltonian_pipeline(
@@ -520,9 +521,9 @@ def mesh_hamiltonian_pipeline(
     jitter_factor: float = 0.0,
     use_gaussian_merging: bool = True,
     parallel_qaoa: bool = True,
-    adaptive_nodes: bool = False,
-    L_fine: float = None,
-    L_coarse: float = None,
+    adaptive_nodes: bool = True,
+    L_fine: Optional[float] = None,
+    L_coarse: Optional[float] = None,
     curvature_weight: float = 0.5,
     smooth_iterations: int = 5,
     export_formats: tuple = ("msh", "vtk", "obj"),
@@ -650,7 +651,7 @@ def mesh_hamiltonian_pipeline(
             phi=r.phi,
             bitstring=r.bitstring,
             patch_id=r.patch_id,
-            show_phi=False,
+            show_phi=True,
     )
         all_traces.extend(traces)
 
