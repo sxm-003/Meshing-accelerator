@@ -12,19 +12,111 @@ produces the final set of global node indices, this module:
 import numpy as np
 from scipy.spatial import Delaunay, cKDTree
 from pathlib import Path
-import triangle  
+from shapely.geometry import Point, LineString
 
 
 # ─────────────────────────────────────────────────────────────
-#  Triangulation + filtering
+#  Constrained Delaunay Triangulation (scipy-based)
 # ─────────────────────────────────────────────────────────────
 
+def _segment_intersects_triangle_edge(seg, p1, p2, tolerance=1e-9):
+    """
+    Check if segment intersects edge (p1, p2), excluding endpoints.
+    Returns True if they cross in interior.
+    """
+    seg_line = LineString(seg)
+    edge_line = LineString([p1, p2])
+    
+    # Check intersection (excluding endpoint touches)
+    intersection = seg_line.intersection(edge_line)
+    if intersection.is_empty:
+        return False
+    
+    # If intersection is a point, check if it's truly interior
+    if intersection.geom_type == 'Point':
+        pt = np.array([intersection.x, intersection.y])
+        # Check if point is strictly between edge endpoints (not at boundary)
+        dist_to_p1 = np.linalg.norm(pt - p1)
+        dist_to_p2 = np.linalg.norm(pt - p2)
+        edge_len = np.linalg.norm(p2 - p1)
+        # Interior intersection if not near endpoints
+        return (dist_to_p1 > tolerance and dist_to_p2 > tolerance and 
+                abs(dist_to_p1 + dist_to_p2 - edge_len) < tolerance)
+    
+    return False  # LineString intersection (overlapping segments)
 
+
+def _filter_triangles_by_constraints(mesh_nodes, triangles, polygons):
+    """
+    Filter triangles to enforce polygon boundary constraints.
+    
+    A triangle is INVALID if:
+      1. Its centroid is outside all polygons
+      2. Any of its edges intersects polygon boundaries
+    """
+    valid_triangles = []
+    
+    for tri_idx in triangles:
+        tri_vertices = mesh_nodes[tri_idx]
+        tri_center = tri_vertices.mean(axis=0)
+        
+        # Check 1: Is centroid inside at least one polygon?
+        centroid_inside = False
+        for poly in polygons:
+            if poly.contains(Point(tri_center)):
+                centroid_inside = True
+                break
+        
+        if not centroid_inside:
+            continue  # Skip this triangle
+        
+        # Check 2: Do any triangle edges intersect polygon boundaries?
+        edges_violate = False
+        for i in range(3):
+            edge_p1 = tri_vertices[i]
+            edge_p2 = tri_vertices[(i + 1) % 3]
+            
+            for poly in polygons:
+                # Check against exterior ring
+                ext_coords = np.array(poly.exterior.coords)
+                for j in range(len(ext_coords) - 1):
+                    seg_p1 = ext_coords[j]
+                    seg_p2 = ext_coords[j + 1]
+                    if _segment_intersects_triangle_edge(
+                        [edge_p1, edge_p2], seg_p1, seg_p2
+                    ):
+                        edges_violate = True
+                        break
+                
+                # Check against interior holes
+                for hole in poly.interiors:
+                    hole_coords = np.array(hole.coords)
+                    for j in range(len(hole_coords) - 1):
+                        seg_p1 = hole_coords[j]
+                        seg_p2 = hole_coords[j + 1]
+                        if _segment_intersects_triangle_edge(
+                            [edge_p1, edge_p2], seg_p1, seg_p2
+                        ):
+                            edges_violate = True
+                            break
+                
+                if edges_violate:
+                    break
+            
+            if edges_violate:
+                break
+        
+        if not edges_violate:
+            valid_triangles.append(tri_idx)
+    
+    return np.array(valid_triangles) if valid_triangles else np.array([], dtype=int)
 
 
 def triangulate_selected_nodes(nodes, selected_indices, polygons=None):
     """
-    Constrained Delaunay Triangulation (CDT) that respects boundaries.
+    Constrained Delaunay Triangulation using scipy (Python 3.14 compatible).
+    
+    Uses scipy.spatial.Delaunay + polygon-based filtering to enforce constraints.
     
     Returns:
         mesh_nodes:    (M, 2) final coordinates
@@ -38,46 +130,16 @@ def triangulate_selected_nodes(nodes, selected_indices, polygons=None):
     if len(mesh_nodes) < 3:
         raise ValueError(f"Need ≥3 nodes for triangulation, got {len(mesh_nodes)}")
 
-    # 2. Build the input dictionary for the 'triangle' library
-    #    We start with just vertices.
-    tri_input = {'vertices': mesh_nodes}
+    # 2. Compute unconstrained Delaunay triangulation
+    delaunay = Delaunay(mesh_nodes)
+    triangles = delaunay.simplices
 
-    # 3. If polygons are provided, Auto-Generate Constraints (Segments)
-    #    This prevents the "Gap Problem" (triangles crossing empty space).
+    # 3. If polygons provided, filter by constraints (respect boundaries)
     if polygons is not None:
-        segments = []
-        # Build a KDTree for fast lookup: "Which mesh node is at this boundary vertex?"
-        tree = cKDTree(mesh_nodes)
-        
-        for poly in polygons:
-            # Handle exterior and holes
-            rings = [poly.exterior] + list(poly.interiors)
-            for ring in rings:
-                coords = np.array(ring.coords)
-                # Map polygon vertices to your mesh_nodes
-                # distance_upper_bound checks if the mesh actually has a node there
-                dists, idxs = tree.query(coords, distance_upper_bound=1e-5)
-                
-                # Create segments between consecutive valid nodes
-                for i in range(len(idxs) - 1):
-                    u, v = idxs[i], idxs[i+1]
-                    # Check if both points were found in the mesh (dists < inf)
-                    if dists[i] < 1e-5 and dists[i+1] < 1e-5:
-                        if u != v: # Avoid self-loops
-                            segments.append([u, v])
-        
-        if len(segments) > 0:
-            tri_input['segments'] = np.array(segments, dtype=np.int32)
+        triangles = _filter_triangles_by_constraints(mesh_nodes, triangles, polygons)
 
-    # 4. Run Triangulation
-    #    'p': Planar Straight Line Graph (respects segments)
-    #    'D': Conforming Delaunay
-    #    We DO NOT use 'q' (quality) because we want to preserve YOUR quantum nodes exactly.
-    t = triangle.triangulate(tri_input, 'pD')
-
-    # 5. Return exactly what your pipeline expects
-    #    t['vertices'] corresponds 1:1 to mesh_nodes because we didn't add Steiner points
-    return mesh_nodes, t['triangles'], sel
+    # 4. Return exactly what your pipeline expects
+    return mesh_nodes, triangles, sel
 
 # ─────────────────────────────────────────────────────────────
 #  Laplacian smoothing
