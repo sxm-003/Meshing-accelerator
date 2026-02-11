@@ -1,7 +1,60 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "meshoptimiser"
 version = "0.1.0"
+description = "Mesh optimisation and geometry processing tools"
+authors = [
+    { name = "Saksham Aryan" }
+]
+readme = "README.md"
+requires-python = ">=3.10"
+
+dependencies = [
+    "fastapi",
+    "uvicorn",
+    "flask",
+
+    "numpy",
+    "dask",
+    "pymupdf",
+
+    "plotly",
+    "kaleido",
+
+    "jupyter",
+    "notebook",
+    "ipython",
+
+    "gmsh",
+    "ezdxf",
+
+    "prefect",
+
+    "python-dotenv",
+    "tqdm",
+    "jsonschema",
+    "httpx",
+    "openai",
+    "typer",
+    "markdown-it-py",
+    "pygments",
+    "send2trash",
+
+    "pyside6",
+
+    "scipy",
+    "qiskit",
+    "shapely",
+    "prefect_dask",
+    "qiskit-aer",
+    "matplotlib",
+    "triangle"
+]
 
 [tool.setuptools.packages.find]
 where = ["."]
+
 
