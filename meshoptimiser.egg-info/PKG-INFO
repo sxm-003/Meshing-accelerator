@@ -1,0 +1,37 @@
+Metadata-Version: 2.4
+Name: meshoptimiser
+Version: 0.1.0
+Summary: Mesh optimisation and geometry processing tools
+Author: Saksham Aryan
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: fastapi
+Requires-Dist: uvicorn
+Requires-Dist: flask
+Requires-Dist: numpy
+Requires-Dist: dask
+Requires-Dist: pymupdf
+Requires-Dist: plotly
+Requires-Dist: kaleido
+Requires-Dist: jupyter
+Requires-Dist: notebook
+Requires-Dist: ipython
+Requires-Dist: gmsh
+Requires-Dist: ezdxf
+Requires-Dist: prefect
+Requires-Dist: python-dotenv
+Requires-Dist: tqdm
+Requires-Dist: jsonschema
+Requires-Dist: httpx
+Requires-Dist: openai
+Requires-Dist: typer
+Requires-Dist: markdown-it-py
+Requires-Dist: pygments
+Requires-Dist: send2trash
+Requires-Dist: pyside6
+Requires-Dist: scipy
+Requires-Dist: qiskit
+Requires-Dist: shapely
+Requires-Dist: prefect_dask
+Requires-Dist: qiskit-aer
+Requires-Dist: matplotlib
