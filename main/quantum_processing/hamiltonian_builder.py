@@ -341,6 +341,11 @@ def compute_boundary_normals(r, boundary_nodes, k=4):
     """
     Estimate boundary normals using local PCA.
     
+    Includes CORNER DETECTION: If a node is identified as a sharp corner 
+    (based on eigenvalue ratio), we skip generating a normal. This disables 
+    the boundary alignment penalty locally, allowing the mesh to form a 
+    sharp angle instead of forcing it to be smooth.
+    
     Args:
         r: array of (x,y) node coordinates
         boundary_nodes: list of indices on boundary
@@ -353,25 +358,57 @@ def compute_boundary_normals(r, boundary_nodes, k=4):
     normals = {}
     
     for i in boundary_nodes:
-        # Find k-nearest neighbors on boundary
+        # --- 1. Find k-nearest neighbors on boundary ---
         boundary_coords = r[boundary_nodes]
         dists = np.linalg.norm(boundary_coords - r[i], axis=1)
-        idx = np.argsort(dists)[1:k+1]  # Skip itself
         
-        # Get neighbor points
+        # Get indices of k nearest neighbors (skipping index 0 which is itself)
+        # Note: These are indices into 'boundary_coords', not global 'r'
+        idx = np.argsort(dists)[1:k+1]
+        
+        if len(idx) < 2:
+            continue
+            
+        # Get neighbor coordinates and center them
         pts = boundary_coords[idx]
         pts_centered = pts - pts.mean(axis=0)
         
-        # PCA: tangent = first eigenvector (largest variance)
+        # --- 2. PCA (Principal Component Analysis) ---
+        # Covariance matrix
         cov = pts_centered.T @ pts_centered
         eigvals, eigvecs = np.linalg.eigh(cov)
+        
+        # --- 3. NEW: Corner Detection ---
+        # If eigenvalues are similar (λ1 ≈ λ2), the neighbors form a "blob" (corner).
+        # If λ1 >> λ2, they form a "line" (smooth boundary).
+        
+        max_eig = np.max(eigvals)
+        
+        # Avoid division by zero if all points are identical
+        if max_eig < 1e-12: 
+            continue 
+        
+        min_eig = np.min(eigvals)
+        
+        # "Line Quality" metric: 1.0 = perfect line, 0.0 = perfect circle/corner
+        line_quality = 1.0 - (min_eig / max_eig)
+
+        # Threshold: If line quality < 0.9, it's a corner.
+        # SKIP calculating a normal for this node. This allows the mesh 
+        # to snap to the sharp geometry without penalty.
+        if line_quality < 0.9:
+            continue
+            
+        # --- 4. Normal Calculation (only for smooth sections) ---
+        # Tangent is the eigenvector with the largest variance (eigenvalue)
         tangent = eigvecs[:, np.argmax(eigvals)]
         
-        # Normal = perpendicular to tangent
+        # Normal is perpendicular to tangent (-y, x)
         normal = np.array([-tangent[1], tangent[0]])
         normal = normal / (np.linalg.norm(normal) + 1e-10)
         
-        # Ensure normal points outward (away from center)
+        # --- 5. Ensure Normal Points Outward ---
+        # Check against vector from center of mass
         center = r.mean(axis=0)
         if np.dot(normal, r[i] - center) < 0:
             normal = -normal
