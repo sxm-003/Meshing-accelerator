@@ -205,7 +205,7 @@ def adaptive_grid_shapely(polygons, L_fine, L_coarse, boundary_band,
         maxx, maxy = max(maxx, bx[2]), max(maxy, bx[3])
 
     # Fine candidate grid
-    h = L_fine / 2.0
+    h = L_fine / 3.0
     xs = np.arange(minx, maxx + h, h)
     ys = np.arange(miny, maxy + h, h)
     gx, gy = np.meshgrid(xs, ys)
