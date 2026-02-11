@@ -165,9 +165,9 @@ def build_hamiltonian_task(record: PatchRecord, ham_dir: str, rec_dir: str):
     # Enable boundary alignment if boundary nodes present
     boundary_nodes = record.boundary_nodes_idx if has_boundary else None
 
-    tuning_params = { 'domain': 1.0, 'spacing': 1.0, 'sparsity': 1.0, 'bend': 1.0,
-        'max_edge': 1.0, 'density': 1.0, 'angular_bins': 1.0,
-        'collinearity': 1.0, 'boundary_alignment': 1.0
+    tuning_params = { 'domain': 0.9, 'spacing': 0.8, 'sparsity': 1.5, 'bend': 1.3,
+        'max_edge': 1.7, 'density': 0, 'angular_bins': 1.3,
+        'collinearity': 1.8, 'boundary_alignment': 1.0
     }
 
     H, decomposition = hamiltonian_builder(
@@ -521,7 +521,7 @@ def mesh_hamiltonian_pipeline(
     jitter_factor: float = 0.0,
     use_gaussian_merging: bool = True,
     parallel_qaoa: bool = True,
-    adaptive_nodes: bool = True,
+    adaptive_nodes: bool = False,
     L_fine: Optional[float] = None,
     L_coarse: Optional[float] = None,
     curvature_weight: float = 0.5,

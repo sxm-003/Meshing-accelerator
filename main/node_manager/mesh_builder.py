@@ -12,47 +12,72 @@ produces the final set of global node indices, this module:
 import numpy as np
 from scipy.spatial import Delaunay, cKDTree
 from pathlib import Path
+import triangle  
 
 
 # ─────────────────────────────────────────────────────────────
 #  Triangulation + filtering
 # ─────────────────────────────────────────────────────────────
 
+
+
+
 def triangulate_selected_nodes(nodes, selected_indices, polygons=None):
     """
-    Delaunay-triangulate the selected nodes and optionally clip to geometry.
-
-    Args:
-        nodes:           (N_total, 2) full node set
-        selected_indices: 1-D array of global indices into `nodes`
-        polygons:        list of Shapely polygons for filtering (optional)
-
+    Constrained Delaunay Triangulation (CDT) that respects boundaries.
+    
     Returns:
-        mesh_nodes:    (M, 2)  coordinates of the final mesh nodes
-        triangles:     (T, 3)  triangle connectivity (0-indexed into mesh_nodes)
-        global_idx:    (M,)    mapping from mesh_nodes back to original `nodes`
+        mesh_nodes:    (M, 2) final coordinates
+        triangles:     (T, 3) connectivity
+        global_idx:    (M,) mapping back to original 'nodes' indices
     """
+    # 1. Select the nodes
     sel = np.asarray(selected_indices)
     mesh_nodes = nodes[sel]
 
     if len(mesh_nodes) < 3:
         raise ValueError(f"Need ≥3 nodes for triangulation, got {len(mesh_nodes)}")
 
-    tri = Delaunay(mesh_nodes)
-    triangles = tri.simplices
+    # 2. Build the input dictionary for the 'triangle' library
+    #    We start with just vertices.
+    tri_input = {'vertices': mesh_nodes}
 
-    # Filter triangles outside the geometry
+    # 3. If polygons are provided, Auto-Generate Constraints (Segments)
+    #    This prevents the "Gap Problem" (triangles crossing empty space).
     if polygons is not None:
-        from shapely.geometry import Point
-        centroids = mesh_nodes[triangles].mean(axis=1)
-        inside = np.array([
-            any(poly.contains(Point(c[0], c[1])) for poly in polygons)
-            for c in centroids
-        ])
-        triangles = triangles[inside]
+        segments = []
+        # Build a KDTree for fast lookup: "Which mesh node is at this boundary vertex?"
+        tree = cKDTree(mesh_nodes)
+        
+        for poly in polygons:
+            # Handle exterior and holes
+            rings = [poly.exterior] + list(poly.interiors)
+            for ring in rings:
+                coords = np.array(ring.coords)
+                # Map polygon vertices to your mesh_nodes
+                # distance_upper_bound checks if the mesh actually has a node there
+                dists, idxs = tree.query(coords, distance_upper_bound=1e-5)
+                
+                # Create segments between consecutive valid nodes
+                for i in range(len(idxs) - 1):
+                    u, v = idxs[i], idxs[i+1]
+                    # Check if both points were found in the mesh (dists < inf)
+                    if dists[i] < 1e-5 and dists[i+1] < 1e-5:
+                        if u != v: # Avoid self-loops
+                            segments.append([u, v])
+        
+        if len(segments) > 0:
+            tri_input['segments'] = np.array(segments, dtype=np.int32)
 
-    return mesh_nodes, triangles, sel
+    # 4. Run Triangulation
+    #    'p': Planar Straight Line Graph (respects segments)
+    #    'D': Conforming Delaunay
+    #    We DO NOT use 'q' (quality) because we want to preserve YOUR quantum nodes exactly.
+    t = triangle.triangulate(tri_input, 'pD')
 
+    # 5. Return exactly what your pipeline expects
+    #    t['vertices'] corresponds 1:1 to mesh_nodes because we didn't add Steiner points
+    return mesh_nodes, t['triangles'], sel
 
 # ─────────────────────────────────────────────────────────────
 #  Laplacian smoothing
