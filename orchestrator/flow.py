@@ -359,10 +359,8 @@ def visualize_hamiltonian_coefficients(built_records, base_dir: str):
 
 
 @task(
-    tags=["qaoa-aer"],
     retries=1,
     retry_delay_seconds=10,
-
 )
 def run_qaoa_task(record: PatchRecord, rec_dir: str):
     bitstring, energy = run_qaoa_aer(record.hamiltonian_path)
@@ -521,6 +519,7 @@ def mesh_hamiltonian_pipeline(
     jitter_factor: float = 0.0,
     use_gaussian_merging: bool = True,
     parallel_qaoa: bool = True,
+    qaoa_concurrency: int = 4,
     adaptive_nodes: bool = False,
     L_fine: Optional[float] = None,
     L_coarse: Optional[float] = None,
@@ -542,6 +541,7 @@ def mesh_hamiltonian_pipeline(
         use_gaussian_merging: Enable Gaussian-weighted merging of overlapping patches
         parallel_qaoa: If True, dispatch QAOA tasks to Dask workers in parallel.
                        If False, run QAOA sequentially to avoid Aer/OpenMP conflicts.
+        qaoa_concurrency: Max number of in-flight QAOA tasks when parallel_qaoa=True.
         adaptive_nodes: If True, use adaptive density node generation (finer near
                        boundaries/curvature, coarser in interior). If False, uniform grid.
         L_fine: Fine spacing for adaptive mode (auto from L if None)
@@ -597,6 +597,9 @@ def mesh_hamiltonian_pipeline(
     # serialize/deserialize round-trip for no reason.
     qaoa_records = []
     if parallel_qaoa:
+        if qaoa_concurrency < 1:
+            raise ValueError("qaoa_concurrency must be >= 1")
+
         qaoa_futures = []
         for r in built_records:
             r_light = PatchRecord(
@@ -608,7 +611,13 @@ def mesh_hamiltonian_pipeline(
             qaoa_futures.append(
                 run_qaoa_task.submit(r_light, str(rec_dir))
             )
-        qaoa_records = [f.result() for f in qaoa_futures]
+
+            # Bound the number of in-flight QAOA tasks to avoid oversubscription.
+            if len(qaoa_futures) >= qaoa_concurrency:
+                qaoa_records.append(qaoa_futures.pop(0).result())
+
+        while qaoa_futures:
+            qaoa_records.append(qaoa_futures.pop(0).result())
     else:
         for r in built_records:
             r_light = PatchRecord(
