@@ -1,4 +1,0 @@
-data
-node_manager
-orchestrator
-quantum_processing
