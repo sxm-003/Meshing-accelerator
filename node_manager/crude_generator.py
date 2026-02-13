@@ -107,7 +107,7 @@ def extract_segments(msp, curve_samples=64):
             )
 
             pts = [
-                np.array(spline.point(t))
+                np.array(spline.point(t))[:2]
                 for t in np.linspace(0, 1, curve_samples)
             ]
 
@@ -398,6 +398,5 @@ def interactive_view(polygons, interior, offset, boundary):
     )
 
     fig.show()
-
 
 
