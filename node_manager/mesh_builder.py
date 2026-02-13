@@ -24,7 +24,12 @@ def _segment_intersects_triangle_edge(seg, p1, p2, tolerance=1e-9):
     Check if segment intersects edge (p1, p2), excluding endpoints.
     Returns True if they cross in interior.
     """
-    seg_line = LineString(seg)
+    # Defensive XY projection: some DXF sources carry Z while mesh nodes are 2D.
+    seg_xy = [np.asarray(seg[0], dtype=float)[:2], np.asarray(seg[1], dtype=float)[:2]]
+    p1 = np.asarray(p1, dtype=float)[:2]
+    p2 = np.asarray(p2, dtype=float)[:2]
+
+    seg_line = LineString(seg_xy)
     edge_line = LineString([p1, p2])
     
     # Check intersection (excluding endpoint touches)
