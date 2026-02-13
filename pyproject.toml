@@ -51,7 +51,7 @@ dependencies = [
     "prefect_dask",
     "qiskit-aer",
     "matplotlib",
-    "triangle"
+
 ]
 
 [tool.setuptools.packages.find]
