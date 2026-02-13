@@ -362,8 +362,21 @@ def visualize_hamiltonian_coefficients(built_records, base_dir: str):
     retries=1,
     retry_delay_seconds=10,
 )
-def run_qaoa_task(record: PatchRecord, rec_dir: str):
-    bitstring, energy = run_qaoa_aer(record.hamiltonian_path)
+def run_qaoa_task(
+    record: PatchRecord,
+    rec_dir: str,
+    aer_max_parallel_threads: int = 1,
+    aer_max_parallel_experiments: int = 1,
+    aer_max_parallel_shots: int = 1,
+    log_backend_config: bool = False,
+):
+    bitstring, energy = run_qaoa_aer(
+        record.hamiltonian_path,
+        aer_max_parallel_threads=aer_max_parallel_threads,
+        aer_max_parallel_experiments=aer_max_parallel_experiments,
+        aer_max_parallel_shots=aer_max_parallel_shots,
+        log_backend_config=log_backend_config,
+    )
 
     record.bitstring = "".join(str(b) for b in bitstring)
     record.energy = energy
@@ -520,6 +533,10 @@ def mesh_hamiltonian_pipeline(
     use_gaussian_merging: bool = True,
     parallel_qaoa: bool = True,
     qaoa_concurrency: int = 4,
+    qaoa_aer_max_parallel_threads: int = 2,
+    qaoa_aer_max_parallel_experiments: int = 2,
+    qaoa_aer_max_parallel_shots: int = 2,
+    qaoa_log_backend_config: bool = False,
     adaptive_nodes: bool = False,
     L_fine: Optional[float] = None,
     L_coarse: Optional[float] = None,
@@ -542,6 +559,10 @@ def mesh_hamiltonian_pipeline(
         parallel_qaoa: If True, dispatch QAOA tasks to Dask workers in parallel.
                        If False, run QAOA sequentially to avoid Aer/OpenMP conflicts.
         qaoa_concurrency: Max number of in-flight QAOA tasks when parallel_qaoa=True.
+        qaoa_aer_max_parallel_threads: Aer threads per QAOA task.
+        qaoa_aer_max_parallel_experiments: Aer experiment-level parallelism.
+        qaoa_aer_max_parallel_shots: Aer shot-level parallelism.
+        qaoa_log_backend_config: Print Aer/OpenMP config from QAOA tasks.
         adaptive_nodes: If True, use adaptive density node generation (finer near
                        boundaries/curvature, coarser in interior). If False, uniform grid.
         L_fine: Fine spacing for adaptive mode (auto from L if None)
@@ -609,7 +630,14 @@ def mesh_hamiltonian_pipeline(
             )
             r_light.hamiltonian_path = r.hamiltonian_path
             qaoa_futures.append(
-                run_qaoa_task.submit(r_light, str(rec_dir))
+                run_qaoa_task.submit(
+                    r_light,
+                    str(rec_dir),
+                    aer_max_parallel_threads=qaoa_aer_max_parallel_threads,
+                    aer_max_parallel_experiments=qaoa_aer_max_parallel_experiments,
+                    aer_max_parallel_shots=qaoa_aer_max_parallel_shots,
+                    log_backend_config=qaoa_log_backend_config,
+                )
             )
 
             # Bound the number of in-flight QAOA tasks to avoid oversubscription.
@@ -626,7 +654,16 @@ def mesh_hamiltonian_pipeline(
                 boundary_nodes_idx=r.boundary_nodes_idx,
             )
             r_light.hamiltonian_path = r.hamiltonian_path
-            qaoa_records.append(run_qaoa_task(r_light, str(rec_dir)))
+            qaoa_records.append(
+                run_qaoa_task(
+                    r_light,
+                    str(rec_dir),
+                    aer_max_parallel_threads=qaoa_aer_max_parallel_threads,
+                    aer_max_parallel_experiments=qaoa_aer_max_parallel_experiments,
+                    aer_max_parallel_shots=qaoa_aer_max_parallel_shots,
+                    log_backend_config=qaoa_log_backend_config,
+                )
+            )
 
     # --- Gaussian patch merging (optional) ---
     mesh_info = None
