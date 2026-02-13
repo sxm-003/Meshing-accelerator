@@ -1,6 +1,7 @@
 import numpy as np
 from scipy.optimize import minimize
 import time
+import os
 
 from qiskit_aer import AerSimulator
 from qiskit_aer.primitives import SamplerV2
@@ -17,11 +18,23 @@ from qiskit.quantum_info import SparsePauliOp
 # ---------------------------------------------------------------------------
 
 
-def _build_primitives():
+def _build_primitives(
+    aer_max_parallel_threads=None,
+    aer_max_parallel_experiments=1,
+    aer_max_parallel_shots=1,
+):
     """Create fresh Qiskit primitive instances (safe for multiprocess)."""
-    simulator = AerSimulator(method="statevector")
+    backend_options = {"method": "statevector"}
+    if aer_max_parallel_threads is not None:
+        backend_options["max_parallel_threads"] = int(aer_max_parallel_threads)
+    if aer_max_parallel_experiments is not None:
+        backend_options["max_parallel_experiments"] = int(aer_max_parallel_experiments)
+    if aer_max_parallel_shots is not None:
+        backend_options["max_parallel_shots"] = int(aer_max_parallel_shots)
+
+    simulator = AerSimulator(**backend_options)
     estimator = StatevectorEstimator()
-    sampler = SamplerV2()
+    sampler = SamplerV2(options={"backend_options": dict(backend_options)})
     return simulator, estimator, sampler
 
 
@@ -102,6 +115,10 @@ def run_qaoa_aer(
     optimization_method="SLSQP",
     maxiter=500,
     ftol=1e-6,
+    aer_max_parallel_threads=1,
+    aer_max_parallel_experiments=1,
+    aer_max_parallel_shots=1,
+    log_backend_config=False,
 ):
     """
     Complete QAOA pipeline (single run, random init).
@@ -113,6 +130,10 @@ def run_qaoa_aer(
         optimization_method: scipy method (default SLSQP)
         maxiter: Max optimizer iterations (default 500)
         ftol: Function tolerance (default 1e-6)
+        aer_max_parallel_threads: Aer CPU threads per task (1 forces sequential)
+        aer_max_parallel_experiments: Aer experiment-level parallelism
+        aer_max_parallel_shots: Aer shot-level parallelism
+        log_backend_config: Print effective Aer/OpenMP config for debugging
 
     Returns:
         (best_bitstring, optimal_energy)
@@ -120,7 +141,21 @@ def run_qaoa_aer(
     t0 = time.time()
 
     # Fresh primitives for this call (avoids module-level pickle issues)
-    simulator, estimator, sampler = _build_primitives()
+    simulator, estimator, sampler = _build_primitives(
+        aer_max_parallel_threads=aer_max_parallel_threads,
+        aer_max_parallel_experiments=aer_max_parallel_experiments,
+        aer_max_parallel_shots=aer_max_parallel_shots,
+    )
+
+    if log_backend_config:
+        print(
+            "  Aer config: "
+            f"max_parallel_threads={aer_max_parallel_threads}, "
+            f"max_parallel_experiments={aer_max_parallel_experiments}, "
+            f"max_parallel_shots={aer_max_parallel_shots}, "
+            f"OMP_NUM_THREADS={os.environ.get('OMP_NUM_THREADS')}, "
+            f"MKL_NUM_THREADS={os.environ.get('MKL_NUM_THREADS')}"
+        )
 
     # Load Hamiltonian
     data = np.load(hamiltonian_path, allow_pickle=False)
