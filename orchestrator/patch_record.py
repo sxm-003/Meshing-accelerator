@@ -14,6 +14,7 @@ class PatchRecord:
 
     patch_id: str = field(init=False)
     hamiltonian_path: Optional[str] = None
+    decomposition_path: Optional[str] = None
     bitstring: Optional[str] = None
     energy: Optional[float] = None
     decomposition: Optional[dict] = field(default=None, repr=False)  # Hamiltonian penalty breakdown
@@ -33,6 +34,7 @@ class PatchRecord:
                 "phi": None if self.phi is None else self.phi.tolist(),
                 "boundary_nodes_idx": None if self.boundary_nodes_idx is None else self.boundary_nodes_idx.tolist(),
                 "hamiltonian_path": self.hamiltonian_path,
+                "decomposition_path": self.decomposition_path,
                 "bitstring": self.bitstring,
                 "energy": self.energy,
             },
