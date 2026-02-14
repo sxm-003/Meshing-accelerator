@@ -236,10 +236,16 @@ def build_hamiltonian_task(record: PatchRecord, ham_dir: str, rec_dir: str):
     raw_norms = [decomposition["penalty_norms"].get(k, 0.0) for k in penalty_names]
     tuning_factors = [decomposition["tuning_factors"].get(k, 1.0) for k in penalty_names]
     scaled_penalties = decomposition.get("scaled_penalties", {})
-    term_counts = [len(scaled_penalties.get(k, {})) for k in penalty_names]
+    term_counts = []
     coeff_magnitudes = []
     for name in penalty_names:
-        coeff_magnitudes.extend(np.abs(list(scaled_penalties.get(name, {}).values())))
+        penalty_terms = scaled_penalties.get(name, {})
+        if isinstance(penalty_terms, dict):
+            term_counts.append(len(penalty_terms))
+            coeff_magnitudes.extend(np.abs(list(penalty_terms.values())))
+        else:
+            term_counts.append(len(penalty_terms))
+            coeff_magnitudes.extend(abs(float(t[2])) for t in penalty_terms)
 
     np.savez_compressed(
         decomp_path,
@@ -290,7 +296,10 @@ def visualize_hamiltonian_coefficients(built_records, base_dir: str):
 
             if 'scaled_penalties' in decomp:
                 for name, terms in decomp['scaled_penalties'].items():
-                    mags = np.abs(list(terms.values()))
+                    if isinstance(terms, dict):
+                        mags = np.abs(list(terms.values()))
+                    else:
+                        mags = [abs(float(t[2])) for t in terms]
                     all_term_counts[name] = all_term_counts.get(name, 0) + len(mags)
                     all_coeff_magnitudes.extend(mags)
             elif 'term_counts' in decomp:
