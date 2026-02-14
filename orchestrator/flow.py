@@ -2,6 +2,7 @@
 from prefect import flow, task
 import os
 import numpy as np
+from collections import deque
 
 from node_manager.crude_generator import (
     generate_crude_nodes,
@@ -218,7 +219,6 @@ def build_hamiltonian_task(record: PatchRecord, ham_dir: str, rec_dir: str):
         )
 
     record.phi = phi
-    record.decomposition = decomposition
 
 
     ham_path = os.path.join(ham_dir, f"{record.patch_id}.npz")
@@ -231,17 +231,31 @@ def build_hamiltonian_task(record: PatchRecord, ham_dir: str, rec_dir: str):
 
     # Save decomposition alongside Hamiltonian for later visualization
     decomp_path = os.path.join(ham_dir, f"{record.patch_id}_decomp.npz")
-    np.savez(
+    penalty_names = list(decomposition["scaled_norms"].keys())
+    scaled_norms = [decomposition["scaled_norms"].get(k, 0.0) for k in penalty_names]
+    raw_norms = [decomposition["penalty_norms"].get(k, 0.0) for k in penalty_names]
+    tuning_factors = [decomposition["tuning_factors"].get(k, 1.0) for k in penalty_names]
+    scaled_penalties = decomposition.get("scaled_penalties", {})
+    term_counts = [len(scaled_penalties.get(k, {})) for k in penalty_names]
+    coeff_magnitudes = []
+    for name in penalty_names:
+        coeff_magnitudes.extend(np.abs(list(scaled_penalties.get(name, {}).values())))
+
+    np.savez_compressed(
         decomp_path,
-        penalty_names=list(decomposition['scaled_norms'].keys()),
-        scaled_norms=list(decomposition['scaled_norms'].values()),
-        raw_norms=list(decomposition['penalty_norms'].values()),
-        tuning_factors=[decomposition['tuning_factors'].get(k, 1.0)
-                        for k in decomposition['scaled_norms'].keys()],
-        n_qubits=decomposition['n_qubits'],
+        penalty_names=np.asarray(penalty_names),
+        scaled_norms=np.asarray(scaled_norms, dtype=float),
+        raw_norms=np.asarray(raw_norms, dtype=float),
+        tuning_factors=np.asarray(tuning_factors, dtype=float),
+        term_counts=np.asarray(term_counts, dtype=int),
+        coeff_magnitudes=np.asarray(coeff_magnitudes, dtype=float),
+        n_qubits=np.asarray([decomposition["n_qubits"]], dtype=int),
     )
 
     record.hamiltonian_path = ham_path
+    record.decomposition_path = decomp_path
+    # Keep Dask payload small: full decomposition is persisted in decomp_path.
+    record.decomposition = None
     record.save(rec_dir)
     return record
 
@@ -259,24 +273,56 @@ def visualize_hamiltonian_coefficients(built_records, base_dir: str):
     all_scaled_norms = {}   # penalty_name -> list of norms across patches
     all_raw_norms = {}
     all_tuning = {}
-    all_coeffs_by_penalty = {}   # penalty_name -> flat list of |coeff|
+    all_term_counts = {}         # penalty_name -> total term count across patches
+    all_coeff_magnitudes = []    # flat list of |coeff| across all penalties/patches
     total_qubits = []
 
     for rec in built_records:
         decomp = getattr(rec, 'decomposition', None)
-        if decomp is None:
+        if decomp is not None:
+            total_qubits.append(decomp['n_qubits'])
+            for name, norm in decomp['scaled_norms'].items():
+                all_scaled_norms.setdefault(name, []).append(norm)
+            for name, norm in decomp['penalty_norms'].items():
+                all_raw_norms.setdefault(name, []).append(norm)
+            for name, tf in decomp['tuning_factors'].items():
+                all_tuning[name] = tf
+
+            if 'scaled_penalties' in decomp:
+                for name, terms in decomp['scaled_penalties'].items():
+                    mags = np.abs(list(terms.values()))
+                    all_term_counts[name] = all_term_counts.get(name, 0) + len(mags)
+                    all_coeff_magnitudes.extend(mags)
+            elif 'term_counts' in decomp:
+                for name, cnt in decomp['term_counts'].items():
+                    all_term_counts[name] = all_term_counts.get(name, 0) + int(cnt)
+                all_coeff_magnitudes.extend(decomp.get('coeff_magnitudes', []))
             continue
-        total_qubits.append(decomp['n_qubits'])
-        for name, norm in decomp['scaled_norms'].items():
-            all_scaled_norms.setdefault(name, []).append(norm)
-        for name, norm in decomp['penalty_norms'].items():
-            all_raw_norms.setdefault(name, []).append(norm)
-        for name, tf in decomp['tuning_factors'].items():
-            all_tuning[name] = tf
-        for name, terms in decomp['scaled_penalties'].items():
-            all_coeffs_by_penalty.setdefault(name, []).extend(
-                np.abs(list(terms.values()))
-            )
+
+        decomp_path = getattr(rec, "decomposition_path", None)
+        if not decomp_path:
+            continue
+        if not os.path.exists(decomp_path):
+            continue
+
+        with np.load(decomp_path, allow_pickle=False) as npz:
+            names = npz["penalty_names"].tolist()
+            scaled_norms = npz["scaled_norms"].tolist()
+            raw_norms = npz["raw_norms"].tolist()
+            tuning_factors = npz["tuning_factors"].tolist()
+            term_counts = npz["term_counts"].tolist() if "term_counts" in npz else [0] * len(names)
+            coeff_magnitudes = npz["coeff_magnitudes"].tolist() if "coeff_magnitudes" in npz else []
+            n_qubits = int(npz["n_qubits"][0]) if "n_qubits" in npz else None
+
+        if n_qubits is not None:
+            total_qubits.append(n_qubits)
+
+        for i, name in enumerate(names):
+            all_scaled_norms.setdefault(name, []).append(float(scaled_norms[i]))
+            all_raw_norms.setdefault(name, []).append(float(raw_norms[i]))
+            all_tuning[name] = float(tuning_factors[i])
+            all_term_counts[name] = all_term_counts.get(name, 0) + int(term_counts[i])
+        all_coeff_magnitudes.extend(float(c) for c in coeff_magnitudes)
 
     if not all_scaled_norms:
         print("  ⚠ No decomposition data — skipping Hamiltonian viz.")
@@ -286,7 +332,6 @@ def visualize_hamiltonian_coefficients(built_records, base_dir: str):
     names = sorted(all_scaled_norms.keys())
     avg_scaled = [np.mean(all_scaled_norms[n]) for n in names]
     avg_raw = [np.mean(all_raw_norms.get(n, [0])) for n in names]
-    tuning_vals = [all_tuning.get(n, 1.0) for n in names]
 
     fig, axes = plt.subplots(2, 2, figsize=(16, 12))
     colors = plt.cm.Set3(np.linspace(0, 1, len(names)))
@@ -305,7 +350,7 @@ def visualize_hamiltonian_coefficients(built_records, base_dir: str):
 
     # ── Panel 2: Number of Pauli terms per penalty ──
     ax = axes[0, 1]
-    term_counts = [len(all_coeffs_by_penalty.get(n, [])) for n in names]
+    term_counts = [all_term_counts.get(n, 0) for n in names]
     bars = ax.bar(names, term_counts, color=colors, edgecolor='black', linewidth=1.5)
     ax.set_ylabel('Number of Pauli Terms (all patches)', fontsize=11, fontweight='bold')
     ax.set_title('Total Generated Pauli Strings per Penalty',
@@ -333,9 +378,7 @@ def visualize_hamiltonian_coefficients(built_records, base_dir: str):
 
     # ── Panel 4: Coefficient magnitude histogram ──
     ax = axes[1, 1]
-    flat_coeffs = []
-    for n in names:
-        flat_coeffs.extend(all_coeffs_by_penalty.get(n, []))
+    flat_coeffs = all_coeff_magnitudes
     if flat_coeffs:
         arr = np.array(flat_coeffs)
         ax.hist(arr, bins=40, color='steelblue', edgecolor='black', alpha=0.7)
@@ -516,8 +559,8 @@ def build_mesh_task(nodes, merged_indices, dxf_path, output_dir,
 
 @flow(task_runner=DaskTaskRunner( 
     cluster_kwargs={
-        "n_workers": 8,  
-        "threads_per_worker": 2, 
+        "n_workers": 1,  
+        "threads_per_worker": 1, 
         "processes": True,
         "memory_limit": "auto",  
         "timeout": "120s",  
@@ -527,10 +570,11 @@ def build_mesh_task(nodes, merged_indices, dxf_path, output_dir,
 def mesh_hamiltonian_pipeline(
     dxf_path: str,
     L: float = 0.5,
-    Q_max: int = 12,
+    Q_max: int = 5000,
     overlap_factor: float = 1.0,
     jitter_factor: float = 0.0,
     use_gaussian_merging: bool = True,
+    hamiltonian_concurrency: int = 64,
     parallel_qaoa: bool = True,
     qaoa_concurrency: int = 4,
     qaoa_aer_max_parallel_threads: int = 2,
@@ -556,6 +600,7 @@ def mesh_hamiltonian_pipeline(
         overlap_factor: Controls overlap between patches (0.0=no overlap, 1.0=standard, >1.0=more)
         jitter_factor: Random jitter for node generation (0.0=uniform grid, 1.0=full jitter)
         use_gaussian_merging: Enable Gaussian-weighted merging of overlapping patches
+        hamiltonian_concurrency: Max number of in-flight Hamiltonian tasks.
         parallel_qaoa: If True, dispatch QAOA tasks to Dask workers in parallel.
                        If False, run QAOA sequentially to avoid Aer/OpenMP conflicts.
         qaoa_concurrency: Max number of in-flight QAOA tasks when parallel_qaoa=True.
@@ -597,7 +642,11 @@ def mesh_hamiltonian_pipeline(
                                      cad_boundary_idx=cad_boundary_idx)
     records = build_patch_records(nodes, patches)
 
-    ham_futures = []
+    if hamiltonian_concurrency < 1:
+        raise ValueError("hamiltonian_concurrency must be >= 1")
+
+    ham_futures = deque()
+    built_records = []
     for r in records:
         ham_futures.append(
             build_hamiltonian_task.submit(
@@ -606,8 +655,13 @@ def mesh_hamiltonian_pipeline(
                 str(rec_dir),
             )
         )
+        # Bound number of in-flight Hamiltonian tasks to avoid overwhelming
+        # scheduler/client comms for large DXFs.
+        if len(ham_futures) >= hamiltonian_concurrency:
+            built_records.append(ham_futures.popleft().result())
 
-    built_records = [f.result() for f in ham_futures]
+    while ham_futures:
+        built_records.append(ham_futures.popleft().result())
 
     # QAOA — parallel or sequential based on user preference.
     # Sequential avoids Aer/OpenMP conflicts with Dask multiprocess workers;
@@ -621,12 +675,13 @@ def mesh_hamiltonian_pipeline(
         if qaoa_concurrency < 1:
             raise ValueError("qaoa_concurrency must be >= 1")
 
-        qaoa_futures = []
+        qaoa_futures = deque()
         for r in built_records:
             r_light = PatchRecord(
                 patch_nodes=r.patch_nodes,
                 phi=r.phi,
                 boundary_nodes_idx=r.boundary_nodes_idx,
+                global_indices=r.global_indices,
             )
             r_light.hamiltonian_path = r.hamiltonian_path
             qaoa_futures.append(
@@ -642,16 +697,17 @@ def mesh_hamiltonian_pipeline(
 
             # Bound the number of in-flight QAOA tasks to avoid oversubscription.
             if len(qaoa_futures) >= qaoa_concurrency:
-                qaoa_records.append(qaoa_futures.pop(0).result())
+                qaoa_records.append(qaoa_futures.popleft().result())
 
         while qaoa_futures:
-            qaoa_records.append(qaoa_futures.pop(0).result())
+            qaoa_records.append(qaoa_futures.popleft().result())
     else:
         for r in built_records:
             r_light = PatchRecord(
                 patch_nodes=r.patch_nodes,
                 phi=r.phi,
                 boundary_nodes_idx=r.boundary_nodes_idx,
+                global_indices=r.global_indices,
             )
             r_light.hamiltonian_path = r.hamiltonian_path
             qaoa_records.append(
