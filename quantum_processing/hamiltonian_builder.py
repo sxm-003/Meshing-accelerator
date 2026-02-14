@@ -1,6 +1,7 @@
 import numpy as np
 from itertools import combinations
 from qiskit.quantum_info import SparsePauliOp
+from scipy.spatial import cKDTree
 
 
 def compute_distance_matrix(r):
@@ -12,29 +13,14 @@ def compute_distance_matrix(r):
 
 # PAULI OPERATORS
 
-def pauli_Z(n,k):
-    # Compact key: avoids storing full-length Pauli strings while aggregating terms.
-    return ("Z", int(k))
-
-def pauli_ZZ(n,k,l):
-    i, j = int(k), int(l)
-    if i > j:
-        i, j = j, i
-    return ("ZZ", i, j)
-
-
-def pauli_key_to_label(key, n):
-    """Convert compact key back to qiskit label string."""
+def pauli_key_to_sparse_entry(key, coeff):
+    """compact key + coeff -> SparsePauliOp.from_sparse_list entry."""
     kind = key[0]
-    p = ["I"] * n
     if kind == "Z":
-        p[key[1]] = "Z"
-    elif kind == "ZZ":
-        p[key[1]] = "Z"
-        p[key[2]] = "Z"
-    else:
-        raise ValueError(f"Unsupported Pauli key kind: {kind}")
-    return "".join(p)
+        return ("Z", [int(key[1])], complex(coeff))
+    if kind == "ZZ":
+        return ("ZZ", [int(key[1]), int(key[2])], complex(coeff))
+    raise ValueError(f"Unsupported Pauli key kind: {kind}")
 
 
 def sparse_term_to_key(term):
@@ -610,10 +596,10 @@ def hamiltonian_builder(
         for key, coeff in term_dict.items():
             H_terms[key] = H_terms.get(key, 0.0) + coeff * scale
 
-    pauli_keys = [pauli_key_to_label(key, n) for key in H_terms.keys()]
-    pauli_coeffs = list(H_terms.values())
-
-    H = SparsePauliOp(pauli_keys, pauli_coeffs)
+    sparse_entries = [
+        pauli_key_to_sparse_entry(key, coeff) for key, coeff in H_terms.items()
+    ]
+    H = SparsePauliOp.from_sparse_list(sparse_entries, num_qubits=n)
 
     if return_decomposition:
         # Build per-penalty scaled contributions (after normalization + tuning)
