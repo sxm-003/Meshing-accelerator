@@ -159,9 +159,28 @@ def run_qaoa_aer(
 
     # Load Hamiltonian
     data = np.load(hamiltonian_path, allow_pickle=False)
-    paulis = data["paulis"]
-    coeffs = data["coeffs"]
-    hamiltonian = SparsePauliOp(paulis, coeffs)
+    if "sparse_ops" in data and "sparse_positions" in data:
+        ops = data["sparse_ops"]
+        positions = data["sparse_positions"]
+        coeffs = data["coeffs"]
+        num_qubits = int(data["num_qubits"][0])
+
+        sparse_list = []
+        for op, pos_row, coeff in zip(ops, positions, coeffs):
+            op = str(op)
+            if op == "Z":
+                pos = [int(pos_row[0])]
+            elif op == "ZZ":
+                pos = [int(pos_row[0]), int(pos_row[1])]
+            else:
+                raise ValueError(f"Unsupported sparse op in Hamiltonian file: {op}")
+            sparse_list.append((op, pos, complex(coeff)))
+        hamiltonian = SparsePauliOp.from_sparse_list(sparse_list, num_qubits=num_qubits)
+    else:
+        # Backward compatibility with older Hamiltonian files.
+        paulis = data["paulis"]
+        coeffs = data["coeffs"]
+        hamiltonian = SparsePauliOp(paulis, coeffs)
     num_qubits = hamiltonian.num_qubits
     n_params = 2 * reps
 

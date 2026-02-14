@@ -223,10 +223,19 @@ def build_hamiltonian_task(record: PatchRecord, ham_dir: str, rec_dir: str):
 
     ham_path = os.path.join(ham_dir, f"{record.patch_id}.npz")
 
+    sparse_terms = H.to_sparse_list()
+    sparse_ops = np.asarray([t[0] for t in sparse_terms], dtype="U2")
+    sparse_positions = np.full((len(sparse_terms), 2), -1, dtype=np.int32)
+    sparse_coeffs = np.asarray([complex(t[2]) for t in sparse_terms], dtype=np.complex128)
+    for idx, (_, pos, _) in enumerate(sparse_terms):
+        sparse_positions[idx, :len(pos)] = np.asarray(pos, dtype=np.int32)
+
     np.savez(
         ham_path,
-        paulis=H.paulis.to_labels(),
-        coeffs=H.coeffs,
+        sparse_ops=sparse_ops,
+        sparse_positions=sparse_positions,
+        coeffs=sparse_coeffs,
+        num_qubits=np.asarray([H.num_qubits], dtype=np.int32),
     )
 
     # Save decomposition alongside Hamiltonian for later visualization
@@ -579,7 +588,7 @@ def build_mesh_task(nodes, merged_indices, dxf_path, output_dir,
 def mesh_hamiltonian_pipeline(
     dxf_path: str,
     L: float = 0.5,
-    Q_max: int = 5000,
+    Q_max: int = 50,
     overlap_factor: float = 1.0,
     jitter_factor: float = 0.0,
     use_gaussian_merging: bool = True,
