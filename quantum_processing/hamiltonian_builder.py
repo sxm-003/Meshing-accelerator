@@ -13,15 +13,71 @@ def compute_distance_matrix(r):
 # PAULI OPERATORS
 
 def pauli_Z(n,k):
-    p = ["I"] * n
-    p[k] = "Z"
-    return "".join(p)
+    # Compact key: avoids storing full-length Pauli strings while aggregating terms.
+    return ("Z", int(k))
 
 def pauli_ZZ(n,k,l):
+    i, j = int(k), int(l)
+    if i > j:
+        i, j = j, i
+    return ("ZZ", i, j)
+
+
+def pauli_key_to_label(key, n):
+    """Convert compact key back to qiskit label string."""
+    kind = key[0]
     p = ["I"] * n
-    p[k] = "Z"
-    p[l] = "Z"
+    if kind == "Z":
+        p[key[1]] = "Z"
+    elif kind == "ZZ":
+        p[key[1]] = "Z"
+        p[key[2]] = "Z"
+    else:
+        raise ValueError(f"Unsupported Pauli key kind: {kind}")
     return "".join(p)
+
+
+def sparse_term_to_key(term):
+    """("Z",[i],c) / ("ZZ",[i,j],c) -> compact key."""
+    op, positions, _ = term
+    if op == "Z":
+        return ("Z", int(positions[0]))
+    if op == "ZZ":
+        i, j = int(positions[0]), int(positions[1])
+        if i > j:
+            i, j = j, i
+        return ("ZZ", i, j)
+    raise ValueError(f"Unsupported sparse op: {op}")
+
+
+def sparse_terms_to_dict(terms, zero_tol=1e-12):
+    """Aggregate sparse term list by key."""
+    out = {}
+    for term in terms:
+        key = sparse_term_to_key(term)
+        coeff = float(term[2])
+        out[key] = out.get(key, 0.0) + coeff
+    return {k: v for k, v in out.items() if abs(v) > zero_tol}
+
+
+def key_to_sparse_term(key, coeff):
+    """compact key + coeff -> sparse tuple form."""
+    if key[0] == "Z":
+        return ("Z", [int(key[1])], float(coeff))
+    if key[0] == "ZZ":
+        return ("ZZ", [int(key[1]), int(key[2])], float(coeff))
+    raise ValueError(f"Unsupported key kind: {key[0]}")
+
+
+def scale_sparse_terms(terms, scale, zero_tol=1e-12):
+    """Scale sparse term list and drop near-zero coefficients."""
+    out = []
+    for op, positions, coeff in terms:
+        c = float(coeff) * float(scale)
+        if abs(c) <= zero_tol:
+            continue
+        out.append((op, [int(p) for p in positions], c))
+    return out
 
 
 
@@ -70,16 +126,16 @@ def build_radius_bend_triples(r, radius, max_degree=8, dmat=None):
     return bend_triples
 
 def domain_penalty_strings(phi, alpha, band):
-    n = len(phi)
-    terms = {}
-
-    for i, phi_i in enumerate(phi):
-        g = max(phi_i + band, 0.0)
-        coeff = 0.5 * alpha * g * g
-
-        if coeff > 0:
-            terms[pauli_Z(n, i)] = terms.get(pauli_Z(n, i), 0) - coeff
-
+    """
+    Returns sparse terms in tuple form:
+      ("Z", [i], coeff)
+    """
+    terms = []
+    g_vals = np.maximum(np.asarray(phi, dtype=float) + band, 0.0)
+    coeffs = 0.5 * alpha * g_vals**2
+    indices = np.where(coeffs > 1e-10)[0]
+    for i in indices:
+        terms.append(("Z", [int(i)], float(-coeffs[i])))
     return terms
 
 
@@ -92,8 +148,7 @@ def phi_circle_field_local(nodes, R):
 
  
 def spacing_penalty_strings(r, neighbors, L, gamma):
-    n = len(r)
-    terms = {}
+    terms = []
 
     for k, l in neighbors:
         distance = np.linalg.norm(np.array(r[k]) - np.array(r[l]))
@@ -102,14 +157,10 @@ def spacing_penalty_strings(r, neighbors, L, gamma):
         if w_kl == 0:
             continue
 
-        # ZZ term
-        vals_zz = pauli_ZZ(n, k, l)
-        terms[vals_zz] = terms.get(vals_zz, 0.0) + gamma * w_kl / 4
-
-        # single-Z terms
-        for q in (k, l):
-            vals_z = pauli_Z(n, q)
-            terms[vals_z] = terms.get(vals_z, 0.0) - gamma * w_kl / 4
+        c = gamma * w_kl / 4
+        terms.append(("ZZ", [int(k), int(l)], float(c)))
+        terms.append(("Z", [int(k)], float(-c)))
+        terms.append(("Z", [int(l)], float(-c)))
 
     return terms
 
@@ -119,27 +170,25 @@ def sparsity_penalty_strings(n, N, mu):
     Proper cardinality penalty:
         mu * (sum x_i - N)^2
     """
-    terms = {}
+    terms = []
 
     A = mu * (N - n/2)
     B = mu / 2
 
     # Linear Z terms
     for i in range(n):
-        zi = pauli_Z(n, i)
-        terms[zi] = terms.get(zi, 0.0) + A
+        terms.append(("Z", [int(i)], float(A)))
 
     # Quadratic ZZ terms
     for i in range(n):
         for j in range(i+1, n):
-            zij = pauli_ZZ(n, i, j)
-            terms[zij] = terms.get(zij, 0.0) + B
+            terms.append(("ZZ", [int(i), int(j)], float(B)))
 
     return terms
 
 def repulsion_penalty_strings(r, d_min, eta):
     n = len(r)
-    terms = {}
+    terms = []
 
     for k,l in combinations(range(n), 2):
         distance = np.linalg.norm(np.array(r[k]) - np.array(r[l]))
@@ -148,12 +197,10 @@ def repulsion_penalty_strings(r, d_min, eta):
 
         w_kl = (d_min - distance)**2
 
-        vals_zz = pauli_ZZ(n, k, l)
-        terms[vals_zz] = terms.get(vals_zz, 0) + eta * w_kl / 4
-        
-        for q in (k,l):
-            vals_z = pauli_Z(n, q)
-            terms[vals_z] = terms.get(vals_z, 0.0) - eta * w_kl / 4
+        c = eta * w_kl / 4
+        terms.append(("ZZ", [int(k), int(l)], float(c)))
+        terms.append(("Z", [int(k)], float(-c)))
+        terms.append(("Z", [int(l)], float(-c)))
 
     return terms
 
@@ -163,8 +210,7 @@ def bend_penalty_strings(r, bend_triples, kappa):
     bend_triples: (i, j, k) with j,k neighbors of i
     kappa: weight
     """
-    n = len(r)
-    terms = {}
+    terms = []
 
     for i, j, k in bend_triples:
         rij = np.linalg.norm(np.array(r[j]) - np.array(r[i]))
@@ -177,12 +223,10 @@ def bend_penalty_strings(r, bend_triples, kappa):
 
         # distribute as ZZ terms
         for a, b in [(i, j), (i, k), (j, k)]:
-            zz = pauli_ZZ(n, a, b)
-            terms[zz] = terms.get(zz, 0.0) + kappa * w / 12
-
-            for q in (a, b):
-                z = pauli_Z(n, q)
-                terms[z] = terms.get(z, 0.0) - kappa * w / 12
+            c = kappa * w / 12
+            terms.append(("ZZ", [int(a), int(b)], float(c)))
+            terms.append(("Z", [int(a)], float(-c)))
+            terms.append(("Z", [int(b)], float(-c)))
 
     return terms
 
@@ -192,7 +236,7 @@ def max_edge_penalty_strings(r, d_max, eta, dmat=None):
     n = len(r)
     if dmat is None:
         dmat = compute_distance_matrix(r)
-    terms = {}
+    terms = []
 
     for i in range(n):
         for j in range(i+1, n):
@@ -202,30 +246,25 @@ def max_edge_penalty_strings(r, d_max, eta, dmat=None):
 
             w = eta * (dij - d_max)**2 / 4
 
-            zz = pauli_ZZ(n, i, j)
-            terms[zz] = terms.get(zz, 0.0) + w
-
-            for q in (i, j):
-                z = pauli_Z(n, q)
-                terms[z] = terms.get(z, 0.0) - w
+            terms.append(("ZZ", [int(i), int(j)], float(w)))
+            terms.append(("Z", [int(i)], float(-w)))
+            terms.append(("Z", [int(j)], float(-w)))
 
     return terms
 
 
 def count_penalty_strings(n, target_n, lam):
     """Penalize deviation from target number of nodes"""
-    terms = {}
+    terms = []
     A = lam * (target_n - n/2)
     B = lam / 2
 
     for i in range(n):
-        zi = pauli_Z(n, i)
-        terms[zi] = terms.get(zi, 0.0) + A
+        terms.append(("Z", [int(i)], float(A)))
 
     for i in range(n):
         for j in range(i+1, n):
-            zij = pauli_ZZ(n, i, j)
-            terms[zij] = terms.get(zij, 0.0) + B
+            terms.append(("ZZ", [int(i), int(j)], float(B)))
 
     return terms
 
@@ -280,13 +319,13 @@ def build_collinear_pairs(r, neighbors, cos_thresh=0.85):
 
 def collinearity_penalty_strings(n, collinear_pairs, eta_col):
     """Penalize collinear node selection"""
-    terms = {}
+    terms = []
     w = eta_col / 4
 
     for j, k in collinear_pairs:
-        terms[pauli_ZZ(n, j, k)] = terms.get(pauli_ZZ(n, j, k), 0.0) + w
-        terms[pauli_Z(n, j)] = terms.get(pauli_Z(n, j), 0.0) - w
-        terms[pauli_Z(n, k)] = terms.get(pauli_Z(n, k), 0.0) - w
+        terms.append(("ZZ", [int(j), int(k)], float(w)))
+        terms.append(("Z", [int(j)], float(-w)))
+        terms.append(("Z", [int(k)], float(-w)))
 
     return terms
 
@@ -312,7 +351,7 @@ def compute_angular_bins(r, num_bins=6):
 def angular_bins_penalty_strings(r, num_bins, eta_theta):
     """Penalize unbalanced angular distribution"""
     n = len(r)
-    terms = {}
+    terms = []
     
     bins = compute_angular_bins(r, num_bins=num_bins)
     
@@ -327,13 +366,9 @@ def angular_bins_penalty_strings(r, num_bins, eta_theta):
                 if i >= j:
                     continue
                 w = eta_theta * (len(bin_nodes) - target_per_bin)**2 / (4 * num_bins)
-                zz = pauli_ZZ(n, i, j)
-                terms[zz] = terms.get(zz, 0.0) + w / 4
-                
-                z_i = pauli_Z(n, i)
-                z_j = pauli_Z(n, j)
-                terms[z_i] = terms.get(z_i, 0.0) - w / 8
-                terms[z_j] = terms.get(z_j, 0.0) - w / 8
+                terms.append(("ZZ", [int(i), int(j)], float(w / 4)))
+                terms.append(("Z", [int(i)], float(-w / 8)))
+                terms.append(("Z", [int(j)], float(-w / 8)))
     
     return terms
 
@@ -435,7 +470,7 @@ def boundary_alignment_penalty_strings(r, boundary_nodes, boundary_normals, neig
         terms: Pauli string penalty terms
     """
     n = len(r)
-    terms = {}
+    terms = []
     
     # For each boundary node
     for i in boundary_nodes:
@@ -465,14 +500,10 @@ def boundary_alignment_penalty_strings(r, boundary_nodes, boundary_normals, neig
             coeff = beta * alignment / 4.0
             
             # Add ZZ term (penalizes edge if both endpoints selected)
-            zz_key = pauli_ZZ(n, i, j)
-            terms[zz_key] = terms.get(zz_key, 0) + coeff
-            
+            terms.append(("ZZ", [int(i), int(j)], float(coeff)))
             # Add Z terms (encourage selecting boundary nodes)
-            z_i = pauli_Z(n, i)
-            z_j = pauli_Z(n, j)
-            terms[z_i] = terms.get(z_i, 0) - coeff / 2.0
-            terms[z_j] = terms.get(z_j, 0) - coeff / 2.0
+            terms.append(("Z", [int(i)], float(-coeff / 2.0)))
+            terms.append(("Z", [int(j)], float(-coeff / 2.0)))
     
     return terms
 
@@ -553,17 +584,20 @@ def hamiltonian_builder(
         untuned_penalties['boundary_alignment'] = boundary_alignment_penalty_strings(r, boundary_nodes, boundary_normals, neighbors_dict, beta)
 
 
+    untuned_penalty_dicts = {}
     penalty_norms = {}
     for name, terms in untuned_penalties.items():
-        if terms:
-            norm = np.sqrt(sum(c**2 for c in terms.values()))
+        term_dict = sparse_terms_to_dict(terms)
+        untuned_penalty_dicts[name] = term_dict
+        if term_dict:
+            norm = np.sqrt(sum(c**2 for c in term_dict.values()))
             penalty_norms[name] = norm if norm > 1e-10 else 1.0
         else:
             penalty_norms[name] = 1.0
 
     for name, terms in untuned_penalties.items():
-        
-        if not terms:
+        term_dict = untuned_penalty_dicts.get(name, {})
+        if not term_dict:
             continue
         factor = tuning.get(name, 1.0)
         norm = penalty_norms[name]
@@ -573,10 +607,10 @@ def hamiltonian_builder(
         else:
             scale = factor
 
-        for key, coeff in terms.items():
+        for key, coeff in term_dict.items():
             H_terms[key] = H_terms.get(key, 0.0) + coeff * scale
 
-    pauli_keys = list(H_terms.keys())
+    pauli_keys = [pauli_key_to_label(key, n) for key in H_terms.keys()]
     pauli_coeffs = list(H_terms.values())
 
     H = SparsePauliOp(pauli_keys, pauli_coeffs)
@@ -586,14 +620,17 @@ def hamiltonian_builder(
         scaled_penalties = {}
         scaled_norms = {}
         for name, terms in untuned_penalties.items():
-            if not terms:
+            term_dict = untuned_penalty_dicts.get(name, {})
+            if not term_dict:
                 continue
             factor = tuning.get(name, 1.0)
             norm = penalty_norms[name]
             scale = (factor / norm) if normalize else factor
-            scaled = {k: v * scale for k, v in terms.items()}
-            scaled_penalties[name] = scaled
-            scaled_norms[name] = np.sqrt(sum(c**2 for c in scaled.values()))
+            scaled_dict = {k: v * scale for k, v in term_dict.items()}
+            scaled_penalties[name] = [
+                key_to_sparse_term(k, c) for k, c in scaled_dict.items()
+            ]
+            scaled_norms[name] = np.sqrt(sum(c**2 for c in scaled_dict.values()))
 
         decomposition = {
             'untuned_penalties': untuned_penalties,
@@ -608,5 +645,3 @@ def hamiltonian_builder(
     return H
 
         
-
-
