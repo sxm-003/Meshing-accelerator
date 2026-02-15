@@ -114,7 +114,7 @@ def run_qaoa_aer(
     init_params=None,
     optimization_method="SLSQP",
     maxiter=500,
-    ftol=1e-6,
+    ftol=1e-3,
     aer_max_parallel_threads=1,
     aer_max_parallel_experiments=1,
     aer_max_parallel_shots=1,
@@ -190,6 +190,7 @@ def run_qaoa_aer(
 
     # Random initialization unless explicitly provided
     if init_params is None:
+        np.random.seed(42)  # For reproducibility
         p0 = np.random.uniform(0, 2 * np.pi, size=n_params)
     else:
         p0 = np.asarray(init_params, dtype=float)

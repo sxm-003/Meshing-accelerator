@@ -166,9 +166,9 @@ def build_hamiltonian_task(record: PatchRecord, ham_dir: str, rec_dir: str):
     # Enable boundary alignment if boundary nodes present
     boundary_nodes = record.boundary_nodes_idx if has_boundary else None
 
-    tuning_params = { 'domain': 0.9, 'spacing': 0.8, 'sparsity': 1.5, 'bend': 1.8,
-        'max_edge': 1.7, 'density': 0, 'angular_bins': 1.3,
-        'collinearity': 1.8, 'boundary_alignment': 1.0
+    tuning_params = { 'domain': 0, 'spacing': 0, 'sparsity': 2, 'bend': 2,
+        'max_edge': 0, 'density': 0, 'angular_bins': 0,
+        'collinearity': 0, 'boundary_alignment': 0
     }
 
     H, decomposition = hamiltonian_builder(
@@ -577,7 +577,7 @@ def build_mesh_task(nodes, merged_indices, dxf_path, output_dir,
 
 @flow(task_runner=DaskTaskRunner( 
     cluster_kwargs={
-        "n_workers": 1,  
+        "n_workers": 8,  
         "threads_per_worker": 1, 
         "processes": True,
         "memory_limit": "auto",  
@@ -587,8 +587,8 @@ def build_mesh_task(nodes, merged_indices, dxf_path, output_dir,
 ))
 def mesh_hamiltonian_pipeline(
     dxf_path: str,
-    L: float = 0.5,
-    Q_max: int = 50,
+    L: float = 0.1,
+    Q_max: int = 10,
     overlap_factor: float = 1.0,
     jitter_factor: float = 0.0,
     use_gaussian_merging: bool = True,
@@ -793,4 +793,4 @@ def mesh_hamiltonian_pipeline(
         return {"qaoa_records": qaoa_records}
 
 if __name__ == "__main__":
-    mesh_hamiltonian_pipeline("data/test.dxf")
+    mesh_hamiltonian_pipeline("data/sample.dxf")

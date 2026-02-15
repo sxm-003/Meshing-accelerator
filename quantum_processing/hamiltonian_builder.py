@@ -67,7 +67,7 @@ def scale_sparse_terms(terms, scale, zero_tol=1e-12):
 
 
 
-def build_radius_bend_triples(r, radius, max_degree=8, dmat=None):
+def build_radius_bend_triples(r, radius, max_degree=8, dmat=None, use_kdtree=True):
     """
     r: array of shape (n, 2) – node coordinates
     radius: interaction radius
@@ -78,17 +78,29 @@ def build_radius_bend_triples(r, radius, max_degree=8, dmat=None):
         list of (i, j, k) triples
         meaning: j and k are local neighbors of i
     """
+    r = np.asarray(r, dtype=float)
     n = len(r)
-    if dmat is None:
-        dmat = compute_distance_matrix(r)
 
-    # Step 1: find local neighbors per node (vectorized distance lookup)
-    triu_i, triu_j = np.triu_indices(n, k=1)
-    d = dmat[triu_i, triu_j]
-    mask = d <= radius
-    valid_idx = np.where(mask)[0]
-    sort_order = np.argsort(d[valid_idx])
-    valid_sorted = valid_idx[sort_order]
+
+    if dmat is None and use_kdtree:
+        tree = cKDTree(r)
+        pairs = list(tree.query_pairs(radius))
+        if not pairs:
+            return []
+        pair_i = np.asarray([p[0] for p in pairs], dtype=np.int32)
+        pair_j = np.asarray([p[1] for p in pairs], dtype=np.int32)
+        d = np.linalg.norm(r[pair_i] - r[pair_j], axis=1)
+        valid_sorted = np.argsort(d)
+        triu_i, triu_j = pair_i, pair_j
+    else:
+        if dmat is None:
+            dmat = compute_distance_matrix(r)
+        triu_i, triu_j = np.triu_indices(n, k=1)
+        d = dmat[triu_i, triu_j]
+        mask = d <= radius
+        valid_idx = np.where(mask)[0]
+        sort_order = np.argsort(d[valid_idx])
+        valid_sorted = valid_idx[sort_order]
 
     neighbors = [[] for _ in range(n)]
     degree = [0] * n
@@ -172,22 +184,38 @@ def sparsity_penalty_strings(n, N, mu):
 
     return terms
 
-def repulsion_penalty_strings(r, d_min, eta):
+def repulsion_penalty_strings(r, d_min, eta, use_kdtree=True):
+    r = np.asarray(r, dtype=float)
     n = len(r)
     terms = []
 
-    for k,l in combinations(range(n), 2):
-        distance = np.linalg.norm(np.array(r[k]) - np.array(r[l]))
+    # For small n, the quadratic scan is fine unless KD-tree is forced.
+    if not use_kdtree:
+        for k, l in combinations(range(n), 2):
+            distance = np.linalg.norm(r[k] - r[l])
+            if distance >= d_min:
+                continue
+
+            w_kl = (d_min - distance) ** 2
+            c = eta * w_kl / 4
+            terms.append(("ZZ", [int(k), int(l)], float(c)))
+            terms.append(("Z", [int(k)], float(-c)))
+            terms.append(("Z", [int(l)], float(-c)))
+        return terms
+
+    # Only compute close pairs.
+    tree = cKDTree(r)
+    for k, l in tree.query_pairs(r=d_min):
+        k = int(k)
+        l = int(l)
+        distance = np.linalg.norm(r[k] - r[l])
         if distance >= d_min:
             continue
-
-        w_kl = (d_min - distance)**2
-
+        w_kl = (d_min - distance) ** 2
         c = eta * w_kl / 4
-        terms.append(("ZZ", [int(k), int(l)], float(c)))
-        terms.append(("Z", [int(k)], float(-c)))
-        terms.append(("Z", [int(l)], float(-c)))
-
+        terms.append(("ZZ", [k, l], float(c)))
+        terms.append(("Z", [k], float(-c)))
+        terms.append(("Z", [l], float(-c)))
     return terms
 
 def bend_penalty_strings(r, bend_triples, kappa):
@@ -255,7 +283,7 @@ def count_penalty_strings(n, target_n, lam):
     return terms
 
 
-def build_radius_neighbors(r, radius, dmat=None):
+def build_radius_neighbors(r, radius, dmat=None, use_kdtree=False):
     """Build neighbor dictionary within radius.
     
     Args:
@@ -263,15 +291,25 @@ def build_radius_neighbors(r, radius, dmat=None):
         radius: interaction radius
         dmat: optional precomputed distance matrix
     """
+    r = np.asarray(r, dtype=float)
     n = len(r)
     neighbors = {}
-    if dmat is None:
-        r = np.array(r)
-        dmat = compute_distance_matrix(r)
 
+    # For small n (e.g. Q_max=12), a dense distance matrix is usually faster
+    # than building a KD-tree. For larger n, KD-tree avoids O(n^2) memory/time.
+    if dmat is None and use_kdtree:
+        tree = cKDTree(r)
+        balls = tree.query_ball_point(r, r=radius)
+        for i in range(n):
+            # remove self
+            neigh = [j for j in balls[i] if j != i]
+            neighbors[i] = neigh
+        return neighbors
+
+    if dmat is None:
+        dmat = compute_distance_matrix(r)
     for i in range(n):
         neighbors[i] = np.where((dmat[i] < radius) & (dmat[i] > 0))[0].tolist()
-
     return neighbors
 
 
@@ -526,8 +564,12 @@ def hamiltonian_builder(
         default_tuning.update(tuning_factors)
     tuning = default_tuning
 
-    dmat = compute_distance_matrix(r)
-    neighbors_dict = build_radius_neighbors(r, radius=3*L, dmat=dmat)
+    # Neighbor search: force KD-tree for all n (user preference).
+    use_kdtree_neighbors = True
+    dmat = None
+    neighbors_dict = build_radius_neighbors(
+        r, radius=3 * L, dmat=dmat, use_kdtree=use_kdtree_neighbors
+    )
     neighbor_pairs = []
     for i in neighbors_dict:
         for j in neighbors_dict[i]:
@@ -544,10 +586,12 @@ def hamiltonian_builder(
         untuned_penalties['sparsity'] = sparsity_penalty_strings(n, N, mu)
 
     if use_repulsion:
-        untuned_penalties['repulsion'] = repulsion_penalty_strings(r, d_min, eta)
+        untuned_penalties['repulsion'] = repulsion_penalty_strings(
+            r, d_min, eta, use_kdtree=use_kdtree_neighbors
+        )
 
     if use_bend:
-        bend_triples = build_radius_bend_triples(r, 3*L, dmat=dmat)
+        bend_triples = build_radius_bend_triples(r, 3*L, dmat=dmat, use_kdtree=use_kdtree_neighbors)
         untuned_penalties['bend'] = bend_penalty_strings(r, bend_triples, kappa)
 
     if use_max_edge:
