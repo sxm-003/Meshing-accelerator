@@ -9,11 +9,9 @@ from node_manager.crude_generator import (
     load_dxf, extract_segments, segments_to_polygons,
 )
 from node_manager.adaptive_generator import generate_adaptive_nodes
-from node_manager.patch_generator import (
-    generate_patch,)
+from node_manager.critical_region_manager import build_hybrid_region_patches
 from node_manager.gaussian_patch_merger import (
     merge_patch_results_gaussian,
-    prepare_patch_for_qaoa,
 )
 from node_manager.mesh_builder import build_and_save_mesh
 
@@ -84,19 +82,49 @@ def generate_nodes_task(dxf_path, jitter_factor=0.0, adaptive=False,
 
 
 @task
-def generate_patches_task(nodes, L, Q_max, overlap_factor=1.0, cad_boundary_idx=None):
+def generate_region_patches_task(
+    nodes,
+    L,
+    Q_max,
+    overlap_factor=1.0,
+    cad_boundary_idx=None,
+    use_critical_regions=True,
+    curvature_threshold_percentile=90.0,
+    min_angle_threshold=15.0,
+    edge_ratio_threshold=4.0,
+    normal_region_qmax=None,
+):
     """
-    Generate patches with configurable overlap.
-    
-    Args:
-        nodes: Node coordinates
-        L: Resolution / characteristic length
-        Q_max: Maximum qubits per patch
-        overlap_factor: Overlap control (0.0=no overlap, 1.0=standard, >1.0=more overlap)
-        cad_boundary_idx: Global indices of CAD boundary nodes (from DXF geometry)
+    Split the mesh into critical/normal regions and generate patch sets.
+
+    Critical patches are used for QAOA; normal patches are tagged for
+    classical Delaunay handling.
     """
-    return generate_patch(L, nodes, Q_max, overlap_factor=overlap_factor,
-                          cad_boundary_idx=cad_boundary_idx)
+    region_data = build_hybrid_region_patches(
+        nodes=nodes,
+        L=L,
+        Q_max=Q_max,
+        overlap_factor=overlap_factor,
+        cad_boundary_idx=cad_boundary_idx,
+        use_critical_regions=use_critical_regions,
+        curvature_threshold_percentile=curvature_threshold_percentile,
+        min_angle_threshold=min_angle_threshold,
+        edge_ratio_threshold=edge_ratio_threshold,
+        normal_region_qmax=normal_region_qmax,
+    )
+
+    diagnostics = region_data["diagnostics"]
+    print(
+        "\n  Region segmentation: "
+        f"critical={diagnostics['n_critical']} ({100.0 * diagnostics['n_critical'] / max(1, len(nodes)):.1f}%), "
+        f"normal={diagnostics['n_normal']} ({100.0 * diagnostics['n_normal'] / max(1, len(nodes)):.1f}%)"
+    )
+    print(
+        "  Patch split: "
+        f"critical={len(region_data['critical_patches'])}, "
+        f"normal={len(region_data['normal_patches'])}"
+    )
+    return region_data
 
 
 @task
@@ -132,15 +160,30 @@ def build_patch_records(nodes, patches):
             patch_nodes=patch_nodes,
             boundary_nodes_idx=boundary_idx_local,
             global_indices=np.asarray(all_idx, dtype=np.intp),
+            region_type=p.get("region_type", "critical"),
         ))
     
-    # Diagnostic: show patch qubit counts so user can verify Q_max is respected
     sizes = [len(r.patch_nodes) for r in records]
     if sizes:
-        print(f"\n  Patch summary: {len(records)} patches, "
-              f"qubit counts: min={min(sizes)}, max={max(sizes)}, "
-              f"avg={np.mean(sizes):.1f}")
+        n_critical = sum(1 for r in records if r.region_type == "critical")
+        n_normal = sum(1 for r in records if r.region_type == "normal")
+        print(
+            f"\n  Patch summary: {len(records)} total "
+            f"(critical={n_critical}, normal={n_normal}), "
+            f"qubit counts min/max/avg={min(sizes)}/{max(sizes)}/{np.mean(sizes):.1f}"
+        )
     return records
+
+
+@task
+def persist_patch_metadata_task(records, rec_dir: str):
+    """
+    Persist patch metadata records before optimization so both critical and
+    normal patches are visible in outputs/records.
+    """
+    for record in records:
+        record.save(rec_dir)
+    return len(records)
 
 
 @task()
@@ -155,8 +198,8 @@ def build_hamiltonian_task(record: PatchRecord, ham_dir: str, rec_dir: str):
     dists = np.linalg.norm(np.array(record.patch_nodes) - center, axis=1)
     L = np.mean(np.linalg.norm(np.array(record.patch_nodes) - np.roll(np.array(record.patch_nodes), 
                                                                       shift=1, axis=0),axis=1))
-    R = np.percentile(dists, 80)
-    phi = phi_circle_field_local(record.patch_nodes, R=1.0)
+    R = np.percentile(dists, 90)
+    phi = phi_circle_field_local(record.patch_nodes, R=R)
     band = 0.8* R
 
     # Check if patch has boundary nodes
@@ -166,9 +209,9 @@ def build_hamiltonian_task(record: PatchRecord, ham_dir: str, rec_dir: str):
     # Enable boundary alignment if boundary nodes present
     boundary_nodes = record.boundary_nodes_idx if has_boundary else None
 
-    tuning_params = { 'domain': 0, 'spacing': 0, 'sparsity': 2, 'bend': 2,
-        'max_edge': 0, 'density': 0, 'angular_bins': 0,
-        'collinearity': 0, 'boundary_alignment': 0
+    tuning_params = { 'domain': 0, 'spacing': 0, 'sparsity': 2, 'bend': 1.8,
+        'max_edge': 1.6, 'density': 0, 'angular_bins': 0,
+        'collinearity': 2, 'boundary_alignment': 1.5
     }
 
     H, decomposition = hamiltonian_builder(
@@ -577,8 +620,8 @@ def build_mesh_task(nodes, merged_indices, dxf_path, output_dir,
 
 @flow(task_runner=DaskTaskRunner( 
     cluster_kwargs={
-        "n_workers": 8,  
-        "threads_per_worker": 1, 
+        "n_workers": 6,  
+        "threads_per_worker": 2, 
         "processes": True,
         "memory_limit": "auto",  
         "timeout": "120s",  
@@ -587,9 +630,9 @@ def build_mesh_task(nodes, merged_indices, dxf_path, output_dir,
 ))
 def mesh_hamiltonian_pipeline(
     dxf_path: str,
-    L: float = 0.1,
+    L: float = 1,
     Q_max: int = 10,
-    overlap_factor: float = 1.0,
+    overlap_factor: float = 1.5,
     jitter_factor: float = 0.0,
     use_gaussian_merging: bool = True,
     hamiltonian_concurrency: int = 64,
@@ -603,13 +646,21 @@ def mesh_hamiltonian_pipeline(
     L_fine: Optional[float] = None,
     L_coarse: Optional[float] = None,
     curvature_weight: float = 0.5,
+    use_critical_regions: bool = True,
+    critical_curvature_percentile: float = 80.0,
+    critical_min_angle_threshold: float = 15.0,
+    critical_edge_ratio_threshold: float = 4.0,
+    normal_region_qmax: Optional[int] = None,
     smooth_iterations: int = 5,
     export_formats: tuple = ("msh", "vtk", "obj"),
 ):
     """
     QAOA-based mesh optimization pipeline.
     
-    Full pipeline: DXF → nodes → patches → Hamiltonians → QAOA → merge → mesh → export
+    Full pipeline:
+      DXF → adaptive nodes → critical/normal split →
+      QAOA on critical patches + classical normal region →
+      merge → mesh → export
     
     Args:
         dxf_path: Path to DXF file with mesh nodes
@@ -631,6 +682,12 @@ def mesh_hamiltonian_pipeline(
         L_fine: Fine spacing for adaptive mode (auto from L if None)
         L_coarse: Coarse spacing for adaptive mode (auto from L if None)
         curvature_weight: How much boundary curvature affects node density (0..1)
+        use_critical_regions: Enable critical-vs-normal region segmentation.
+        critical_curvature_percentile: Curvature percentile threshold for critical nodes.
+        critical_min_angle_threshold: Reserved for notebook parity.
+        critical_edge_ratio_threshold: Edge-ratio threshold for critical nodes.
+        normal_region_qmax: Patch node cap for normal/classical regions.
+                            If None, defaults to max(100, 10*Q_max).
         smooth_iterations: Laplacian smoothing passes on final mesh (0=disable)
         export_formats: Mesh file formats to export
     """
@@ -656,16 +713,37 @@ def mesh_hamiltonian_pipeline(
         L_coarse=L_coarse,
         curvature_weight=curvature_weight,
     )
-    patches = generate_patches_task(nodes, L, Q_max, overlap_factor=overlap_factor,
-                                     cad_boundary_idx=cad_boundary_idx)
-    records = build_patch_records(nodes, patches)
+    region_data = generate_region_patches_task(
+        nodes=nodes,
+        L=L,
+        Q_max=Q_max,
+        overlap_factor=overlap_factor,
+        cad_boundary_idx=cad_boundary_idx,
+        use_critical_regions=use_critical_regions,
+        curvature_threshold_percentile=critical_curvature_percentile,
+        min_angle_threshold=critical_min_angle_threshold,
+        edge_ratio_threshold=critical_edge_ratio_threshold,
+        normal_region_qmax=normal_region_qmax,
+    )
+    records = build_patch_records(nodes, region_data["all_patches"])
+    persist_patch_metadata_task(records, str(rec_dir))
+
+    critical_records = [r for r in records if r.region_type == "critical"]
+    normal_records = [r for r in records if r.region_type == "normal"]
+    normal_indices = np.asarray(region_data["normal_indices"], dtype=np.intp)
+
+    print(
+        f"\n  Hybrid patch records: critical={len(critical_records)}, "
+        f"normal={len(normal_records)}"
+    )
 
     if hamiltonian_concurrency < 1:
         raise ValueError("hamiltonian_concurrency must be >= 1")
 
+    # Build Hamiltonians only for critical patches (QAOA path).
     ham_futures = deque()
     built_records = []
-    for r in records:
+    for r in critical_records:
         ham_futures.append(
             build_hamiltonian_task.submit(
                 r,
@@ -681,74 +759,93 @@ def mesh_hamiltonian_pipeline(
     while ham_futures:
         built_records.append(ham_futures.popleft().result())
 
-    # QAOA — parallel or sequential based on user preference.
-    # Sequential avoids Aer/OpenMP conflicts with Dask multiprocess workers;
-    # parallel is faster but may deadlock on some systems.
-    #
-    # Strip the heavy decomposition dict before passing to QAOA — it only
-    # needs hamiltonian_path and the decomposition would bloat every
-    # serialize/deserialize round-trip for no reason.
+    # QAOA is only applied to critical patches.
     qaoa_records = []
-    if parallel_qaoa:
-        if qaoa_concurrency < 1:
-            raise ValueError("qaoa_concurrency must be >= 1")
+    if built_records:
+        if parallel_qaoa:
+            if qaoa_concurrency < 1:
+                raise ValueError("qaoa_concurrency must be >= 1")
 
-        qaoa_futures = deque()
-        for r in built_records:
-            r_light = PatchRecord(
-                patch_nodes=r.patch_nodes,
-                phi=r.phi,
-                boundary_nodes_idx=r.boundary_nodes_idx,
-                global_indices=r.global_indices,
-            )
-            r_light.hamiltonian_path = r.hamiltonian_path
-            qaoa_futures.append(
-                run_qaoa_task.submit(
-                    r_light,
-                    str(rec_dir),
-                    aer_max_parallel_threads=qaoa_aer_max_parallel_threads,
-                    aer_max_parallel_experiments=qaoa_aer_max_parallel_experiments,
-                    aer_max_parallel_shots=qaoa_aer_max_parallel_shots,
-                    log_backend_config=qaoa_log_backend_config,
+            qaoa_futures = deque()
+            for r in built_records:
+                r_light = PatchRecord(
+                    patch_nodes=r.patch_nodes,
+                    phi=r.phi,
+                    boundary_nodes_idx=r.boundary_nodes_idx,
+                    global_indices=r.global_indices,
+                    region_type=r.region_type,
                 )
-            )
+                r_light.hamiltonian_path = r.hamiltonian_path
+                qaoa_futures.append(
+                    run_qaoa_task.submit(
+                        r_light,
+                        str(rec_dir),
+                        aer_max_parallel_threads=qaoa_aer_max_parallel_threads,
+                        aer_max_parallel_experiments=qaoa_aer_max_parallel_experiments,
+                        aer_max_parallel_shots=qaoa_aer_max_parallel_shots,
+                        log_backend_config=qaoa_log_backend_config,
+                    )
+                )
 
-            # Bound the number of in-flight QAOA tasks to avoid oversubscription.
-            if len(qaoa_futures) >= qaoa_concurrency:
+                # Bound the number of in-flight QAOA tasks to avoid oversubscription.
+                if len(qaoa_futures) >= qaoa_concurrency:
+                    qaoa_records.append(qaoa_futures.popleft().result())
+
+            while qaoa_futures:
                 qaoa_records.append(qaoa_futures.popleft().result())
-
-        while qaoa_futures:
-            qaoa_records.append(qaoa_futures.popleft().result())
-    else:
-        for r in built_records:
-            r_light = PatchRecord(
-                patch_nodes=r.patch_nodes,
-                phi=r.phi,
-                boundary_nodes_idx=r.boundary_nodes_idx,
-                global_indices=r.global_indices,
-            )
-            r_light.hamiltonian_path = r.hamiltonian_path
-            qaoa_records.append(
-                run_qaoa_task(
-                    r_light,
-                    str(rec_dir),
-                    aer_max_parallel_threads=qaoa_aer_max_parallel_threads,
-                    aer_max_parallel_experiments=qaoa_aer_max_parallel_experiments,
-                    aer_max_parallel_shots=qaoa_aer_max_parallel_shots,
-                    log_backend_config=qaoa_log_backend_config,
+        else:
+            for r in built_records:
+                r_light = PatchRecord(
+                    patch_nodes=r.patch_nodes,
+                    phi=r.phi,
+                    boundary_nodes_idx=r.boundary_nodes_idx,
+                    global_indices=r.global_indices,
+                    region_type=r.region_type,
                 )
-            )
+                r_light.hamiltonian_path = r.hamiltonian_path
+                qaoa_records.append(
+                    run_qaoa_task(
+                        r_light,
+                        str(rec_dir),
+                        aer_max_parallel_threads=qaoa_aer_max_parallel_threads,
+                        aer_max_parallel_experiments=qaoa_aer_max_parallel_experiments,
+                        aer_max_parallel_shots=qaoa_aer_max_parallel_shots,
+                        log_backend_config=qaoa_log_backend_config,
+                    )
+                )
+    else:
+        print("\n  No critical patches detected; skipping QAOA stage.")
 
-    # --- Gaussian patch merging (optional) ---
+    # --- Gaussian patch merging (critical patches only) + hybrid assembly ---
     mesh_info = None
+    merged_critical_indices = np.empty(0, dtype=np.intp)
+    merged_indices = normal_indices.copy()
     if use_gaussian_merging:
-        merged_indices = merge_patches_gaussian_task(qaoa_records, nodes, L)
-        print(f"\n✓ Merged mesh contains {len(merged_indices)} unique nodes")
-        
-        # Save merged indices
+        if qaoa_records:
+            merged_critical_indices = merge_patches_gaussian_task(qaoa_records, nodes, L)
+            merged_critical_indices = np.asarray(merged_critical_indices, dtype=np.intp)
+            print(f"\n✓ Critical QAOA merge contains {len(merged_critical_indices)} unique nodes")
+        else:
+            print("\n  No QAOA patch outputs to merge; using only normal-region nodes.")
+
+        if len(merged_critical_indices) > 0:
+            merged_indices = np.unique(np.concatenate([normal_indices, merged_critical_indices]))
+        else:
+            merged_indices = np.unique(normal_indices)
+
+        print(
+            "  Hybrid node assembly: "
+            f"normal={len(normal_indices)}, critical_merged={len(merged_critical_indices)}, "
+            f"total={len(merged_indices)}"
+        )
+
+        # Save selected index sets
         merged_path = base_dir / "merged_indices.npy"
         np.save(merged_path, merged_indices)
-        print(f"  Saved merged indices to {merged_path}")
+        critical_merged_path = base_dir / "critical_merged_indices.npy"
+        np.save(critical_merged_path, merged_critical_indices)
+        print(f"  Saved hybrid merged indices to {merged_path}")
+        print(f"  Saved critical merged indices to {critical_merged_path}")
 
         # --- Build final mesh: Delaunay triangulate → smooth → export ---
         mesh_dir = base_dir / "mesh"
@@ -762,9 +859,8 @@ def mesh_hamiltonian_pipeline(
     # --- Hamiltonian coefficient visualization ---
     visualize_hamiltonian_coefficients(built_records, str(base_dir))
 
-    # --- Visualization ---
+    # --- Visualization (critical/QAOA patches only) ---
     all_traces = []
-
     for r in qaoa_records:
         traces = patch_traces(
             patch_nodes=r.patch_nodes,
@@ -772,20 +868,22 @@ def mesh_hamiltonian_pipeline(
             bitstring=r.bitstring,
             patch_id=r.patch_id,
             show_phi=True,
-    )
+        )
         all_traces.extend(traces)
 
-    # ---- ONE combined plot ----
-    fig_all = combined_figure(
-        all_traces,
-        title="All patches: selected nodes",
-    )
-    fig_all.show()
+    if all_traces:
+        fig_all = combined_figure(
+            all_traces,
+            title="Critical patches: selected nodes",
+        )
+        fig_all.show()
     
     # Return results
     if use_gaussian_merging:
         return {
             "merged_indices": merged_indices,
+            "critical_merged_indices": merged_critical_indices,
+            "normal_indices": normal_indices,
             "mesh_info": mesh_info,
             "qaoa_records": qaoa_records,
         }
@@ -793,4 +891,4 @@ def mesh_hamiltonian_pipeline(
         return {"qaoa_records": qaoa_records}
 
 if __name__ == "__main__":
-    mesh_hamiltonian_pipeline("data/sample.dxf")
+    mesh_hamiltonian_pipeline("data/test.dxf")
