@@ -1,5 +1,6 @@
-import numpy as np 
+import numpy as np
 import plotly.graph_objects as go
+from scipy.spatial import cKDTree
 
 def compute_spacing(L, alpha=0.3):
   #L is resolution
@@ -31,18 +32,20 @@ def compute_patch_radii(nodes, L, Q_max, alpha=0.8):
     return r_patch, r_halo, d_min
 
 def generate_patch_centers(nodes, r_patch):
+    if r_patch <= 0:
+        return np.empty((0, 2), dtype=float)
+
     xmin, xmax, ymin, ymax = domain_bounds(nodes)
 
     spacing = 2.0 * r_patch #spacing between each patch centre(a grid)
     xs = np.arange(xmin + r_patch, xmax, spacing)
     ys = np.arange(ymin + r_patch, ymax, spacing)
 
-    centers = []
-    for x in xs:
-        for y in ys:
-            centers.append([x, y])
+    if len(xs) == 0 or len(ys) == 0:
+        return np.empty((0, 2), dtype=float)
 
-    return np.array(centers)
+    gx, gy = np.meshgrid(xs, ys, indexing="xy")
+    return np.column_stack([gx.ravel(), gy.ravel()])
 
 def distances(points, center):
     """
@@ -84,26 +87,39 @@ def generate_patches_with_overlap(nodes, centers, r_patch, r_halo, Q_max=None,
     # Convert to a set for fast O(1) membership lookup
     cad_boundary_set = set(cad_boundary_idx) if cad_boundary_idx is not None else set()
     
+    if len(nodes) == 0 or len(centers) == 0:
+        return []
+
+    # Build once and query local neighborhoods per center.
+    # This avoids O(n_centers * n_nodes) full distance scans.
+    tree = cKDTree(nodes)
     patches = []
     
     for ci, center in enumerate(centers):
-        # Compute distances from center to all nodes
-        dists = np.linalg.norm(nodes - center, axis=1)
-        
         # Apply overlap factor to halo radius
         # overlap_factor = 0 means no overlap (r_halo_effective = r_patch)
         # overlap_factor = 1 means standard overlap
         overlap_extension = (r_halo - r_patch) * overlap_factor
         r_halo_effective = r_patch + overlap_extension
-        
-        # Classify nodes as interior or halo
-        interior_idx = np.where(dists <= r_patch)[0]
-        halo_idx = np.where((dists > r_patch) & (dists <= r_halo_effective))[0]
+
+        # Only inspect nodes in local neighborhood of this center.
+        # query_ball_point already excludes distant points.
+        candidate_idx = np.asarray(tree.query_ball_point(center, r_halo_effective), dtype=int)
+        if len(candidate_idx) == 0:
+            continue
+
+        candidate_dists = np.linalg.norm(nodes[candidate_idx] - center, axis=1)
+
+        # Classify nodes as interior or halo (global indices)
+        interior_mask = candidate_dists <= r_patch
+        halo_mask = (candidate_dists > r_patch) & (candidate_dists <= r_halo_effective)
+        interior_idx = candidate_idx[interior_mask]
+        halo_idx = candidate_idx[halo_mask]
         
         # Enforce qubit limit if specified
         if Q_max is not None and len(interior_idx) > Q_max:
             # Sort by distance and take closest Q_max nodes
-            interior_dists = dists[interior_idx]
+            interior_dists = np.linalg.norm(nodes[interior_idx] - center, axis=1)
             sorted_idx = np.argsort(interior_dists)
             interior_idx = interior_idx[sorted_idx[:Q_max]]
         
@@ -116,7 +132,7 @@ def generate_patches_with_overlap(nodes, centers, r_patch, r_halo, Q_max=None,
             if total > Q_max:
                 remaining = Q_max - len(interior_idx)
                 if remaining > 0:
-                    halo_dists = dists[halo_idx]
+                    halo_dists = np.linalg.norm(nodes[halo_idx] - center, axis=1)
                     sorted_halo = np.argsort(halo_dists)
                     halo_idx = halo_idx[sorted_halo[:remaining]]
                 else:
@@ -135,6 +151,9 @@ def generate_patches_with_overlap(nodes, centers, r_patch, r_halo, Q_max=None,
         
         cad_boundary_local = np.array(cad_boundary_local, dtype=int) if cad_boundary_local else None
         
+        if len(all_patch_idx) == 0:
+            continue
+
         patch = {
             "center": center,
             "interior_idx": interior_idx,
