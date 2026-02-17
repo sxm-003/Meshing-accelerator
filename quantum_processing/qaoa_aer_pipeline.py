@@ -98,14 +98,42 @@ def to_bitstring(integer, num_bits):
     return [int(digit) for digit in result]
 
 
-def extract_best_bitstring(distribution, num_qubits):
-    """Extract the most likely bitstring from distribution."""
-    keys = list(distribution.keys())
-    values = list(distribution.values())
-    most_likely = keys[np.argmax(np.abs(values))]
-    most_likely_bitstring = to_bitstring(most_likely, num_qubits)
-    most_likely_bitstring.reverse()
-    return most_likely_bitstring
+def bitstring_energy(bitstring, sparse_terms):
+    """
+    Compute classical Ising energy E(z) = <z|H|z> for a sampled bitstring.
+
+    This Hamiltonian builder currently emits diagonal terms (Z/ZZ), so this
+    evaluates energies exactly for computational-basis samples.
+    """
+    z = 1 - 2 * np.asarray(bitstring, dtype=float)  
+    energy = 0.0
+    for op, positions, coeff in sparse_terms:
+        c = float(np.real(coeff))
+        if op == "Z":
+            energy += c * z[int(positions[0])]
+        elif op == "ZZ":
+            i, j = int(positions[0]), int(positions[1])
+            energy += c * z[i] * z[j]
+        elif op == "I":
+            energy += c
+    return float(energy)
+
+
+def extract_lowest_energy_bitstring(distribution, num_qubits, sparse_terms):
+    """Return sampled bitstring with minimum energy."""
+    best_bitstring = None
+    best_energy = np.inf
+
+    for key in distribution.keys():
+        bitstring = to_bitstring(int(key), num_qubits)
+        bitstring.reverse()
+        energy = bitstring_energy(bitstring, sparse_terms)
+
+        if energy < best_energy:
+            best_bitstring = bitstring
+            best_energy = energy
+
+    return best_bitstring, float(best_energy)
 
 
 def run_qaoa_aer(
@@ -200,16 +228,20 @@ def run_qaoa_aer(
         method=optimization_method, maxiter=maxiter, ftol=ftol,
     )
 
-    # Sample from the optimised solution
+    # Sample from the optimised solution and select the minimum-energy sample
     distribution = sample_circuit(candidate_circuit, opt_params, sampler)
-    best_bitstring = extract_best_bitstring(distribution, num_qubits)
+    sparse_terms = hamiltonian.to_sparse_list()
+    best_bitstring, best_sample_energy = extract_lowest_energy_bitstring(
+        distribution, num_qubits, sparse_terms
+    )
 
     elapsed = time.time() - t0
     print(
         f"  QAOA [{num_qubits}q, {reps}p]: "
-        f"energy={opt_cost:.6f}, evals={n_evals}, "
+        f"expectation={opt_cost:.6f}, sample_min={best_sample_energy:.6f}, "
+        f"evals={n_evals}, "
         f"selected={sum(best_bitstring)}/{num_qubits} nodes, "
         f"time={elapsed:.1f}s"
     )
 
-    return best_bitstring, float(opt_cost)
+    return best_bitstring, float(best_sample_energy)
