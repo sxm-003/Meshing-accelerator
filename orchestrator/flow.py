@@ -4,6 +4,8 @@ import os
 import numpy as np
 from collections import deque
 
+from scipy.spatial import cKDTree
+
 from node_manager.crude_generator import (
     generate_crude_nodes,
     load_dxf, extract_segments, segments_to_polygons,
@@ -187,6 +189,7 @@ def persist_patch_metadata_task(records, rec_dir: str):
 
 
 @task()
+
 def build_hamiltonian_task(record: PatchRecord, ham_dir: str, rec_dir: str):
     """
     Build Hamiltonian for a patch with optional boundary alignment penalty.
@@ -194,10 +197,17 @@ def build_hamiltonian_task(record: PatchRecord, ham_dir: str, rec_dir: str):
     If the patch contains boundary nodes, the boundary alignment penalty
     will be automatically enabled to preserve boundary geometry.
     """
+    pts = np.asarray(record.patch_nodes, dtype=float)
+    if len(pts) < 2:
+        L = np.mean(np.linalg.norm(np.array(record.patch_nodes) - np.roll(np.array(record.patch_nodes), 
+                                                                      shift=1, axis=0),axis=1))
+    else:
+        k = min(2, len(pts) - 1)
+        dists, _ = cKDTree(pts).query(pts, k=k + 1)  
+        nn = dists[:, 1]
+        L =  float(np.median(nn))
     center = np.array(record.patch_nodes).mean(axis=0)
     dists = np.linalg.norm(np.array(record.patch_nodes) - center, axis=1)
-    L = np.mean(np.linalg.norm(np.array(record.patch_nodes) - np.roll(np.array(record.patch_nodes), 
-                                                                      shift=1, axis=0),axis=1))
     R = np.percentile(dists, 90)
     phi = phi_circle_field_local(record.patch_nodes, R=R)
     band = 0.8* R
@@ -630,14 +640,14 @@ def build_mesh_task(nodes, merged_indices, dxf_path, output_dir,
 ))
 def mesh_hamiltonian_pipeline(
     dxf_path: str,
-    L: float = 1,
+    L: float = 0.1,
     Q_max: int = 10,
     overlap_factor: float = 1.5,
     jitter_factor: float = 0.0,
     use_gaussian_merging: bool = True,
     hamiltonian_concurrency: int = 64,
     parallel_qaoa: bool = True,
-    qaoa_concurrency: int = 4,
+    qaoa_concurrency: int = 8,
     qaoa_aer_max_parallel_threads: int = 2,
     qaoa_aer_max_parallel_experiments: int = 2,
     qaoa_aer_max_parallel_shots: int = 2,
@@ -646,7 +656,7 @@ def mesh_hamiltonian_pipeline(
     L_fine: Optional[float] = None,
     L_coarse: Optional[float] = None,
     curvature_weight: float = 0.5,
-    use_critical_regions: bool = True,
+    use_critical_regions: bool = False,
     critical_curvature_percentile: float = 80.0,
     critical_min_angle_threshold: float = 15.0,
     critical_edge_ratio_threshold: float = 4.0,
@@ -891,4 +901,4 @@ def mesh_hamiltonian_pipeline(
         return {"qaoa_records": qaoa_records}
 
 if __name__ == "__main__":
-    mesh_hamiltonian_pipeline("data/test.dxf")
+    mesh_hamiltonian_pipeline("data/sample.dxf")
