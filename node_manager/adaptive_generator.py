@@ -17,10 +17,9 @@ The density field is computed from:
 """
 
 import numpy as np
-from shapely.geometry import Point, MultiPoint
-from shapely.ops import nearest_points
 from scipy.spatial import cKDTree
-import math
+
+from node_manager.geometry_validator import GeometryValidator
 
 
 # ─────────────────────────────────────────────────────────────
@@ -167,8 +166,16 @@ def compute_density_field(query_pts, polygons, L_fine, L_coarse,
 #  Adaptive grid generator
 # ─────────────────────────────────────────────────────────────
 
-def adaptive_grid_shapely(polygons, L_fine, L_coarse, boundary_band,
-                          curvature_weight=0.5, jitter_factor=0.0, seed=42):
+def adaptive_grid_shapely(
+    polygons,
+    L_fine,
+    L_coarse,
+    boundary_band,
+    curvature_weight=0.5,
+    jitter_factor=0.0,
+    seed=42,
+    validator=None,
+):
     """
     Generate interior nodes with spatially varying density.
 
@@ -196,13 +203,11 @@ def adaptive_grid_shapely(polygons, L_fine, L_coarse, boundary_band,
         pts: (N, 2) accepted node coordinates
     """
     rng = np.random.RandomState(seed)
+    if validator is None:
+        validator = GeometryValidator(polygons)
 
     # --- Bounding box ---
-    minx, miny, maxx, maxy = polygons[0].bounds
-    for poly in polygons[1:]:
-        bx = poly.bounds
-        minx, miny = min(minx, bx[0]), min(miny, bx[1])
-        maxx, maxy = max(maxx, bx[2]), max(maxy, bx[3])
+    minx, miny, maxx, maxy = validator.bounds
 
     # Fine candidate grid
     h = L_fine / 3.0
@@ -211,10 +216,8 @@ def adaptive_grid_shapely(polygons, L_fine, L_coarse, boundary_band,
     gx, gy = np.meshgrid(xs, ys)
     candidates = np.column_stack([gx.ravel(), gy.ravel()])
 
-    # --- Filter: keep only points inside polygons ---
-    from shapely import contains_xy, union_all
-    combined = union_all(polygons)
-    inside = contains_xy(combined, candidates[:, 0], candidates[:, 1])
+    # --- Filter: keep only points inside the material domain ---
+    inside = validator.mask_inside(candidates, strict=False)
     candidates = candidates[inside]
 
     if len(candidates) == 0:
@@ -240,6 +243,8 @@ def adaptive_grid_shapely(polygons, L_fine, L_coarse, boundary_band,
         dx = (rng.random(len(pts)) - 0.5) * jitter_factor * L_kept
         dy = (rng.random(len(pts)) - 0.5) * jitter_factor * L_kept
         pts = pts + np.column_stack([dx, dy])
+        # Jitter can move points into holes; re-check after perturbation.
+        pts = pts[validator.mask_inside(pts, strict=False)]
 
     return pts
 
@@ -298,6 +303,8 @@ def generate_adaptive_nodes(path, L_fine=None, L_coarse=None, L=None,
 
     if not polygons:
         raise ValueError(f"No closed polygons found in {path}")
+    validator = GeometryValidator(polygons)
+    polygons = validator.polygons
 
     # 1. Boundary nodes
     boundary_nodes = sample_boundaries_shapely(polygons, spacing=L_fine * 0.5)
@@ -318,14 +325,30 @@ def generate_adaptive_nodes(path, L_fine=None, L_coarse=None, L=None,
         curvature_weight=curvature_weight,
         jitter_factor=jitter_factor,
         seed=seed,
+        validator=validator,
     )
 
-    # Stack
-    parts = [p for p in [interior_nodes, offset_nodes, boundary_nodes]
-             if len(p) > 0]
+    interior_nodes = validator.filter_points(interior_nodes, strict=False)
+    offset_nodes = validator.filter_points(offset_nodes, strict=False)
+    boundary_nodes = validator.filter_points(boundary_nodes, strict=False)
+
+    # Stack while tracking origin so dedup keeps partition identity.
+    parts = []
+    labels = []
+    if len(interior_nodes) > 0:
+        parts.append(interior_nodes)
+        labels.append(np.zeros(len(interior_nodes), dtype=np.int8))
+    if len(offset_nodes) > 0:
+        parts.append(offset_nodes)
+        labels.append(np.ones(len(offset_nodes), dtype=np.int8))
+    if len(boundary_nodes) > 0:
+        parts.append(boundary_nodes)
+        labels.append(np.full(len(boundary_nodes), 2, dtype=np.int8))
+
     if not parts:
         raise ValueError("No nodes generated")
     nodes = np.vstack(parts)
+    origin = np.concatenate(labels)
 
     # De-duplicate (keep one of each near-coincident pair)
     tree = cKDTree(nodes)
@@ -336,16 +359,13 @@ def generate_adaptive_nodes(path, L_fine=None, L_coarse=None, L=None,
     if remove:
         keep = sorted(set(range(len(nodes))) - remove)
         nodes = nodes[keep]
-        # Recompute partition sizes (approximate)
-        n_int = len(interior_nodes)
-        n_off = len(offset_nodes)
-    else:
-        n_int = len(interior_nodes)
-        n_off = len(offset_nodes)
+        origin = origin[keep]
 
-    # Re-split for the caller (approximate after dedup)
-    interior_nodes = nodes[:n_int] if n_int <= len(nodes) else nodes
-    offset_nodes_out = nodes[n_int:n_int + n_off] if n_int + n_off <= len(nodes) else np.empty((0, 2))
-    boundary_nodes_out = nodes[n_int + n_off:] if n_int + n_off < len(nodes) else np.empty((0, 2))
+    interior_nodes = nodes[origin == 0]
+    offset_nodes_out = nodes[origin == 1]
+    boundary_nodes_out = nodes[origin == 2]
+
+    stacked = [arr for arr in [interior_nodes, offset_nodes_out, boundary_nodes_out] if len(arr) > 0]
+    nodes = np.vstack(stacked) if stacked else np.empty((0, 2))
 
     return nodes, interior_nodes, offset_nodes_out, boundary_nodes_out
