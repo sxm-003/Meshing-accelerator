@@ -1,18 +1,14 @@
+import math
+import numpy as np
 import ezdxf
 from ezdxf import recover
-import numpy as np
-import math
 from ezdxf.math import BSpline
-from shapely.geometry import LineString, MultiLineString
-from shapely.ops import polygonize
-from shapely.geometry import Point
+from shapely.geometry import LineString, MultiLineString, Point
+from shapely.ops import polygonize, snap, unary_union
 import plotly.io as pio
 import plotly.graph_objects as go
 
-
-import ezdxf
-from ezdxf import recover
-import sys
+from node_manager.geometry_validator import GeometryValidator
 
 def load_dxf(path):
     try:
@@ -118,43 +114,82 @@ def extract_segments(msp, curve_samples=64):
 
 
 def segments_to_polygons(segments):
+    if not segments:
+        return []
+
     lines = [LineString([p0, p1]) for p0, p1 in segments]
     multiline = MultiLineString(lines)
-    polygons = list(polygonize(multiline))
-    return polygons
 
-def jittered_grid_shapely(polygons, L, jitter_frac=0.3, seed=0):
-    np.random.seed(seed)
+    candidates = []
 
-    # Bounding box
-    minx, miny, maxx, maxy = polygons[0].bounds
-    for poly in polygons[1:]:
-        bx = poly.bounds
-        minx, miny = min(minx, bx[0]), min(miny, bx[1])
-        maxx, maxy = max(maxx, bx[2]), max(maxy, bx[3])
+    # Candidate 1: raw polygonization.
+    raw_loops = list(polygonize(multiline))
+    if raw_loops:
+        try:
+            raw_polys = GeometryValidator(raw_loops).polygons
+            candidates.append(("raw", raw_polys))
+        except ValueError:
+            pass
 
-    h = L / 2.0
-    xs = np.arange(minx, maxx + h, h)
-    ys = np.arange(miny, maxy + h, h)
+    # Candidate 2: noded+simplified linework polygonization.
+    # This recovers faces formed by mixed/open chains that only close after noding.
+    try:
+        noded = unary_union(snap(multiline, multiline, 1e-6))
+        noded_loops = list(polygonize(noded))
+        if noded_loops:
+            noded_polys = GeometryValidator(noded_loops).polygons
+            candidates.append(("noded", noded_polys))
+    except Exception:
+        pass
 
-    pts = []
-    for x in xs:
-        for y in ys:
-            dx = (np.random.rand() - 0.5) * jitter_frac * h
-            dy = (np.random.rand() - 0.5) * jitter_frac * h
-            p = Point(x + dx, y + dy)
+    if not candidates:
+        return []
 
-            # IMPORTANT: use covers, not contains
-            if any(poly.covers(p) for poly in polygons):
-                pts.append([p.x, p.y])
+    def candidate_score(polys):
+        holes = sum(len(p.interiors) for p in polys)
+        largest_area = max((p.area for p in polys), default=0.0)
+        total_area = sum(p.area for p in polys)
+        # Prefer richer topology (holes), then dominant face recovery, then coverage.
+        return holes, largest_area, total_area
 
-    pts = np.array(pts, dtype=float)
-    if pts.size == 0:
-        return np.empty((0, 2))
-    return pts
+    best_name, best_polys = max(candidates, key=lambda item: candidate_score(item[1]))
+    return best_polys
+
+def _resample_ring(ring_coords, spacing, min_samples_per_ring):
+    coords = np.array(ring_coords, dtype=float)[:, :2]
+    if len(coords) < 2:
+        return np.empty((0, 2), dtype=float)
+
+    diffs = np.diff(coords, axis=0)
+    seg_lens = np.linalg.norm(diffs, axis=1)
+    total_len = float(seg_lens.sum())
+    if total_len < 1e-12:
+        return coords[:1]
+
+    n = max(min_samples_per_ring, int(np.ceil(total_len / max(spacing, 1e-12))))
+    target_s = np.linspace(0.0, total_len, n, endpoint=False)
+    cum_len = np.concatenate([[0.0], np.cumsum(seg_lens)])
+
+    sampled = np.zeros((n, 2), dtype=float)
+    for i, s in enumerate(target_s):
+        idx = np.searchsorted(cum_len, s, side="right") - 1
+        idx = int(np.clip(idx, 0, len(seg_lens) - 1))
+        t = (s - cum_len[idx]) / (seg_lens[idx] + 1e-30)
+        sampled[i] = coords[idx] * (1.0 - t) + coords[idx + 1] * t
+    return sampled
 
 
-def uniform_grid_shapely(polygons, L, jitter_factor=0.0, seed=0):
+def jittered_grid_shapely(polygons, L, jitter_frac=0.3, seed=0, validator=None):
+    return uniform_grid_shapely(
+        polygons=polygons,
+        L=L,
+        jitter_factor=jitter_frac,
+        seed=seed,
+        validator=validator,
+    )
+
+
+def uniform_grid_shapely(polygons, L, jitter_factor=0.0, seed=0, validator=None):
     """
     Generate uniform grid nodes within polygons with optional jitter.
     
@@ -168,74 +203,58 @@ def uniform_grid_shapely(polygons, L, jitter_factor=0.0, seed=0):
     Returns:
         pts: Array of node coordinates
     """
-    np.random.seed(seed)
+    rng = np.random.RandomState(seed)
+    if validator is None:
+        validator = GeometryValidator(polygons)
 
     # Bounding box
-    minx, miny, maxx, maxy = polygons[0].bounds
-    for poly in polygons[1:]:
-        bx = poly.bounds
-        minx, miny = min(minx, bx[0]), min(miny, bx[1])
-        maxx, maxy = max(maxx, bx[2]), max(maxy, bx[3])
+    minx, miny, maxx, maxy = validator.bounds
 
     h = L / 2.0
     xs = np.arange(minx, maxx + h, h)
     ys = np.arange(miny, maxy + h, h)
 
-    pts = []
-    for x in xs:
-        for y in ys:
-            # Apply jitter if specified
-            if jitter_factor > 0:
-                dx = (np.random.rand() - 0.5) * jitter_factor * h
-                dy = (np.random.rand() - 0.5) * jitter_factor * h
-            else:
-                dx = 0
-                dy = 0
-            
-            p = Point(x + dx, y + dy)
+    gx, gy = np.meshgrid(xs, ys)
+    pts = np.column_stack([gx.ravel(), gy.ravel()])
+    if jitter_factor > 0 and len(pts) > 0:
+        pts[:, 0] += (rng.rand(len(pts)) - 0.5) * jitter_factor * h
+        pts[:, 1] += (rng.rand(len(pts)) - 0.5) * jitter_factor * h
 
-            # Use covers for robust point-in-polygon test
-            if any(poly.covers(p) for poly in polygons):
-                pts.append([p.x, p.y])
+    inside = validator.mask_inside(pts, strict=False)
+    pts = pts[inside]
 
-    pts = np.array(pts, dtype=float)
-    if pts.size == 0:
+    if len(pts) == 0:
         return np.empty((0, 2))
     return pts
 
 
-def sample_boundaries_shapely(polygons, spacing):
-    boundary_pts = []
+def sample_boundaries_shapely(polygons, spacing, min_samples_per_ring=12):
+    boundary_chunks = []
 
     for poly in polygons:
-        ext = np.array(poly.exterior.coords)
-        ext = ext[:, :2]  
-        for i in range(len(ext) - 1):
-            p0, p1 = ext[i], ext[i + 1]
-            length = np.linalg.norm(p1 - p0)
-            n = max(2, int(length / spacing))
-            for t in np.linspace(0, 1, n):
-                boundary_pts.append(p0 * (1 - t) + p1 * t)
+        ext = _resample_ring(
+            poly.exterior.coords,
+            spacing=spacing,
+            min_samples_per_ring=min_samples_per_ring,
+        )
+        if len(ext) > 0:
+            boundary_chunks.append(ext)
 
         for hole in poly.interiors:
-            hcoords = np.array(hole.coords)
-            hcoords = hcoords[:, :2]  
-            for i in range(len(hcoords) - 1):
-                p0, p1 = hcoords[i], hcoords[i + 1]
-                length = np.linalg.norm(p1 - p0)
-                n = max(2, int(length / spacing))
-                for t in np.linspace(0, 1, n):
-                    boundary_pts.append(p0 * (1 - t) + p1 * t)
+            hpts = _resample_ring(
+                hole.coords,
+                spacing=spacing,
+                min_samples_per_ring=min_samples_per_ring,
+            )
+            if len(hpts) > 0:
+                boundary_chunks.append(hpts)
 
-    boundary_pts = np.array(boundary_pts, dtype=float)
-
-    if boundary_pts.size == 0:
+    if not boundary_chunks:
         return np.empty((0, 2))
+    return np.vstack(boundary_chunks)
 
-    return boundary_pts
-
-def offset_boundary_layers(polygons, offsets, spacing):
-    pts = []
+def offset_boundary_layers(polygons, offsets, spacing, min_samples_per_ring=8):
+    chunks = []
 
     for poly in polygons:
         for d in offsets:
@@ -244,20 +263,24 @@ def offset_boundary_layers(polygons, offsets, spacing):
                 continue
 
             if inner.geom_type == "Polygon":
-                rings = [inner.exterior]
+                parts = [inner]
             else:
-                rings = [g.exterior for g in inner.geoms]
+                parts = [g for g in inner.geoms if g.geom_type == "Polygon"]
 
-            for ring in rings:
-                coords = np.array(ring.coords)[:, :2]
-                for i in range(len(coords) - 1):
-                    p0, p1 = coords[i], coords[i + 1]
-                    L = np.linalg.norm(p1 - p0)
-                    n = max(2, int(L / spacing))
-                    for t in np.linspace(0, 1, n):
-                        pts.append(p0 * (1 - t) + p1 * t)
+            for part in parts:
+                rings = [part.exterior, *part.interiors]
+                for ring in rings:
+                    sampled = _resample_ring(
+                        ring.coords,
+                        spacing=spacing,
+                        min_samples_per_ring=min_samples_per_ring,
+                    )
+                    if len(sampled) > 0:
+                        chunks.append(sampled)
 
-    return np.array(pts)
+    if not chunks:
+        return np.empty((0, 2), dtype=float)
+    return np.vstack(chunks)
 
 def adaptive_jittered_grid_shapely(
     polygons,
@@ -266,14 +289,13 @@ def adaptive_jittered_grid_shapely(
     boundary_band,
     jitter_frac=0.3,
     seed=0,
+    validator=None,
 ):
     np.random.seed(seed)
+    if validator is None:
+        validator = GeometryValidator(polygons)
 
-    minx, miny, maxx, maxy = polygons[0].bounds
-    for poly in polygons[1:]:
-        bx = poly.bounds
-        minx, miny = min(minx, bx[0]), min(miny, bx[1])
-        maxx, maxy = max(maxx, bx[2]), max(maxy, bx[3])
+    minx, miny, maxx, maxy = validator.bounds
 
     pts = []
     h = L_boundary / 2
@@ -301,7 +323,8 @@ def adaptive_jittered_grid_shapely(
                 pts.append([x + dx, y + dy])
                 break
 
-    return np.array(pts)
+    pts = np.array(pts, dtype=float)
+    return validator.filter_points(pts, strict=False)
 
 def generate_crude_nodes(path, jitter_factor=0.0):
     """
@@ -321,6 +344,11 @@ def generate_crude_nodes(path, jitter_factor=0.0):
     msp = load_dxf(path)
     segments = extract_segments(msp)
     polygons = segments_to_polygons(segments)
+    if not polygons:
+        raise ValueError(f"No closed polygons found in {path}")
+
+    validator = GeometryValidator(polygons)
+    polygons = validator.polygons
 
     boundary_nodes = sample_boundaries_shapely(
         polygons,
@@ -337,14 +365,18 @@ def generate_crude_nodes(path, jitter_factor=0.0):
     interior_nodes = uniform_grid_shapely(
         polygons,
         L=0.4,  # Characteristic length scale
-        jitter_factor=jitter_factor  # 0.0 = uniform, >0 = jittered
+        jitter_factor=jitter_factor,  # 0.0 = uniform, >0 = jittered
+        validator=validator,
     )
 
-    nodes = np.vstack([
-        interior_nodes,
-        offset_nodes,
-        boundary_nodes
-    ])
+    interior_nodes = validator.filter_points(interior_nodes, strict=False)
+    offset_nodes = validator.filter_points(offset_nodes, strict=False)
+    boundary_nodes = validator.filter_points(boundary_nodes, strict=False)
+
+    parts = [arr for arr in [interior_nodes, offset_nodes, boundary_nodes] if len(arr) > 0]
+    if not parts:
+        raise ValueError("No nodes generated")
+    nodes = np.vstack(parts)
 
     return nodes, interior_nodes, offset_nodes, boundary_nodes
 
@@ -398,5 +430,3 @@ def interactive_view(polygons, interior, offset, boundary):
     )
 
     fig.show()
-
-
