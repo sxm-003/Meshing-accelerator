@@ -10,6 +10,17 @@ def compute_distance_matrix(r):
     diff = r[:, np.newaxis, :] - r[np.newaxis, :, :]
     return np.sqrt((diff ** 2).sum(axis=-1))
 
+def compute_L(nodes):
+    pts = np.asarray(nodes, dtype=float)
+    if len(pts) < 2:
+        L = np.mean(np.linalg.norm(np.array(pts) - np.roll(np.array(pts), 
+                                                                      shift=1, axis=0),axis=1))
+    else:
+        k = min(2, len(pts) - 1)
+        dists, _ = cKDTree(pts).query(pts, k=k + 1)  
+        nn = dists[:, 1]
+        L =  float(np.median(nn))
+    return L
 
 # PAULI OPERATORS
 
@@ -533,7 +544,7 @@ def boundary_alignment_penalty_strings(r, boundary_nodes, boundary_normals, neig
 
 
 def hamiltonian_builder(
-    phi,r,L,
+    phi,r,
     alpha = 0, band = 0 , #domain
     gamma = 0, #spacing
     use_sparsity=False, N = None , mu = 0, #sparsity (count) penalty
@@ -549,7 +560,7 @@ def hamiltonian_builder(
     return_decomposition=False,  # Return per-penalty breakdown for visualization
     ):
 
-
+    L = compute_L(r)
     n = len(phi)
 
     H_terms = {}
