@@ -20,6 +20,7 @@ from node_manager.mesh_builder import build_and_save_mesh
 from quantum_processing.hamiltonian_builder import (
     hamiltonian_builder,
     phi_circle_field_local,
+    compute_L,
 )
 from orchestrator.patch_record import PatchRecord
 from prefect_dask.task_runners import DaskTaskRunner
@@ -197,15 +198,7 @@ def build_hamiltonian_task(record: PatchRecord, ham_dir: str, rec_dir: str):
     If the patch contains boundary nodes, the boundary alignment penalty
     will be automatically enabled to preserve boundary geometry.
     """
-    pts = np.asarray(record.patch_nodes, dtype=float)
-    if len(pts) < 2:
-        L = np.mean(np.linalg.norm(np.array(record.patch_nodes) - np.roll(np.array(record.patch_nodes), 
-                                                                      shift=1, axis=0),axis=1))
-    else:
-        k = min(2, len(pts) - 1)
-        dists, _ = cKDTree(pts).query(pts, k=k + 1)  
-        nn = dists[:, 1]
-        L =  float(np.median(nn))
+    L = compute_L(record.patch_nodes)
     center = np.array(record.patch_nodes).mean(axis=0)
     dists = np.linalg.norm(np.array(record.patch_nodes) - center, axis=1)
     R = np.percentile(dists, 90)
@@ -228,8 +221,6 @@ def build_hamiltonian_task(record: PatchRecord, ham_dir: str, rec_dir: str):
         phi=phi,
         r=record.patch_nodes,
 
-    # geometric scale
-        L=L,
     #domain constraint 
         alpha=10,band=band,
     # spacing 
