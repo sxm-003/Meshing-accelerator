@@ -187,9 +187,9 @@ def run_qaoa_aer(
 
     # Load Hamiltonian
     data = np.load(hamiltonian_path, allow_pickle=False)
-    if "sparse_ops" in data and "sparse_positions" in data:
-        ops = data["sparse_ops"]
-        positions = data["sparse_positions"]
+    if "SparsePauliOp" in data and "coeffs" in data:
+        ops = data["SparsePauliOp"]
+        positions = data["coeffs"]
         coeffs = data["coeffs"]
         num_qubits = int(data["num_qubits"][0])
 
@@ -209,6 +209,151 @@ def run_qaoa_aer(
         paulis = data["paulis"]
         coeffs = data["coeffs"]
         hamiltonian = SparsePauliOp(paulis, coeffs)
+    num_qubits = hamiltonian.num_qubits
+    n_params = 2 * reps
+
+    # Build & transpile ansatz
+    ansatz = ansatz_builder(hamiltonian, reps=reps)
+    candidate_circuit = transpile_circuit(ansatz, simulator)
+
+    # Random initialization unless explicitly provided
+    if init_params is None:
+        np.random.seed(42)  # For reproducibility
+        p0 = np.random.uniform(0, 2 * np.pi, size=n_params)
+    else:
+        p0 = np.asarray(init_params, dtype=float)
+
+    opt_params, opt_cost, n_evals = optimize_parameters(
+        p0, candidate_circuit, hamiltonian, estimator,
+        method=optimization_method, maxiter=maxiter, ftol=ftol,
+    )
+
+    # Sample from the optimised solution and select the minimum-energy sample
+    distribution = sample_circuit(candidate_circuit, opt_params, sampler)
+    sparse_terms = hamiltonian.to_sparse_list()
+    best_bitstring, best_sample_energy = extract_lowest_energy_bitstring(
+        distribution, num_qubits, sparse_terms
+    )
+
+    elapsed = time.time() - t0
+    print(
+        f"  QAOA [{num_qubits}q, {reps}p]: "
+        f"expectation={opt_cost:.6f}, sample_min={best_sample_energy:.6f}, "
+        f"evals={n_evals}, "
+        f"selected={sum(best_bitstring)}/{num_qubits} nodes, "
+        f"time={elapsed:.1f}s"
+    )
+
+    return best_bitstring, float(best_sample_energy)
+
+def qaoa_test (
+    hamiltonian_path,
+    reps=4,
+    init_params=None,
+    optimization_method="SLSQP",
+    maxiter=500,
+    ftol=1e-3,
+    aer_max_parallel_threads=1,
+    aer_max_parallel_experiments=1,
+    aer_max_parallel_shots=1,
+    log_backend_config=False,
+):
+    """
+    Test pipeline.
+
+    Args:
+        hamiltonian_path: Path to Hamiltonian in records array
+        reps: QAOA layers (default 4)
+        init_params: Initial parameters (default: random uniform [0, 2π])
+        optimization_method: scipy method (default SLSQP)
+        maxiter: Max optimizer iterations (default 500)
+        ftol: Function tolerance (default 1e-6)
+        aer_max_parallel_threads: Aer CPU threads per task (1 forces sequential)
+        aer_max_parallel_experiments: Aer experiment-level parallelism
+        aer_max_parallel_shots: Aer shot-level parallelism
+        log_backend_config: Print effective Aer/OpenMP config for debugging
+
+    Returns:
+        (best_bitstring, optimal_energy)
+    """
+    t0 = time.time()
+
+    # Fresh primitives for this call (avoids module-level pickle issues)
+    simulator, estimator, sampler = _build_primitives(
+        aer_max_parallel_threads=aer_max_parallel_threads,
+        aer_max_parallel_experiments=aer_max_parallel_experiments,
+        aer_max_parallel_shots=aer_max_parallel_shots,
+    )
+
+    if log_backend_config:
+        print(
+            "  Aer config: "
+            f"max_parallel_threads={aer_max_parallel_threads}, "
+            f"max_parallel_experiments={aer_max_parallel_experiments}, "
+            f"max_parallel_shots={aer_max_parallel_shots}, "
+            f"OMP_NUM_THREADS={os.environ.get('OMP_NUM_THREADS')}, "
+            f"MKL_NUM_THREADS={os.environ.get('MKL_NUM_THREADS')}"
+        )
+
+    # Load Hamiltonian. Preferred format is a SparsePauliOp already stored
+    # on each record (record.hamiltonian_path = SparsePauliOp(...)).
+    if isinstance(hamiltonian_path, SparsePauliOp):
+        hamiltonian = hamiltonian_path
+    elif isinstance(hamiltonian_path, (str, os.PathLike)):
+        data = np.load(hamiltonian_path, allow_pickle=False)
+        if "SparsePauliOp" in data and "coeffs" in data:
+            ops = data["SparsePauliOp"]
+            positions = data["positions"]
+            coeffs = data["coeffs"]
+            num_qubits = int(data["num_qubits"][0])
+
+            sparse_list = []
+            for op, pos_row, coeff in zip(ops, positions, coeffs):
+                op = str(op)
+                if op == "Z":
+                    pos = [int(pos_row[0])]
+                elif op == "ZZ":
+                    pos = [int(pos_row[0]), int(pos_row[1])]
+                elif op == "I":
+                    pos = []
+                else:
+                    raise ValueError(f"Unsupported sparse op in Hamiltonian file: {op}")
+                sparse_list.append((op, pos, complex(coeff)))
+            hamiltonian = SparsePauliOp.from_sparse_list(sparse_list, num_qubits=num_qubits)
+        else:
+            # Backward compatibility with older Hamiltonian files.
+            paulis = data["paulis"]
+            coeffs = data["coeffs"]
+            hamiltonian = SparsePauliOp(paulis, coeffs)
+    elif isinstance(hamiltonian_path, dict):
+        # Accept in-memory dict-like payloads for ad hoc testing.
+        if "SparsePauliOp" in hamiltonian_path and "coeffs" in hamiltonian_path:
+            ops = hamiltonian_path["SparsePauliOp"]
+            positions = hamiltonian_path["positions"]
+            coeffs = hamiltonian_path["coeffs"]
+            num_qubits = int(hamiltonian_path["num_qubits"][0])
+
+            sparse_list = []
+            for op, pos_row, coeff in zip(ops, positions, coeffs):
+                op = str(op)
+                if op == "Z":
+                    pos = [int(pos_row[0])]
+                elif op == "ZZ":
+                    pos = [int(pos_row[0]), int(pos_row[1])]
+                elif op == "I":
+                    pos = []
+                else:
+                    raise ValueError(f"Unsupported sparse op in Hamiltonian payload: {op}")
+                sparse_list.append((op, pos, complex(coeff)))
+            hamiltonian = SparsePauliOp.from_sparse_list(sparse_list, num_qubits=num_qubits)
+        else:
+            paulis = hamiltonian_path["paulis"]
+            coeffs = hamiltonian_path["coeffs"]
+            hamiltonian = SparsePauliOp(paulis, coeffs)
+    else:
+        raise TypeError(
+            "hamiltonian_path must be SparsePauliOp, a .npz path, or a dict payload."
+        )
     num_qubits = hamiltonian.num_qubits
     n_params = 2 * reps
 
