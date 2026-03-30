@@ -15,18 +15,45 @@ def domain_bounds(nodes):
     return xmin, xmax, ymin, ymax
 
 def estimate_density(nodes):
-    xmin, xmax, ymin, ymax = domain_bounds(nodes)
-    area = (xmax - xmin) * (ymax - ymin)
-    rho = len(nodes) / area
-    return rho
+    pts = np.asarray(nodes, dtype=float)
+    if len(pts) < 2:
+        return 0.0
 
-def compute_patch_radii(nodes, L, Q_max, alpha=0.8):
+    # Global bbox estimate (can under-estimate density on sparse/disconnected masks).
+    xmin, xmax, ymin, ymax = domain_bounds(pts)
+    area = max((xmax - xmin) * (ymax - ymin), 1e-12)
+    rho_bbox = len(pts) / area
+
+    # Local kNN estimate (more robust for non-convex/disconnected regions).
+    k = min(8, len(pts) - 1)
+    if k < 1:
+        return float(rho_bbox)
+
+    tree = cKDTree(pts)
+    dists, _ = tree.query(pts, k=k + 1)  # includes self at [:, 0]
+    rk = np.asarray(dists[:, -1], dtype=float)
+    rho_local = k / (np.pi * (rk ** 2 + 1e-30))
+    rho_knn = float(np.median(rho_local))
+
+    # Use the tighter (higher) estimate to avoid overly large patch radii.
+    return float(max(rho_bbox, rho_knn))
+
+def compute_patch_radii(nodes, L, Q_max, alpha=0.8, max_halo_fraction_of_patch=0.5):
     d_min = compute_spacing(L, alpha)
-    r_int = 2.0 * d_min
-#Qmax is max qubits in a patch , adhereing the hardware compatibility
+
+    # Qmax is max qubits in a patch, adhering to hardware constraints.
     rho = estimate_density(nodes)
+    if rho <= 1e-12:
+        return d_min, d_min, d_min
+
     A_patch = Q_max / rho
     r_patch = np.sqrt(A_patch / np.pi)
+
+    # Keep halo local to the interior footprint. If overlap dominates interior
+    # radius, patches can capture distant/unrelated nodes.
+    base_overlap = 2.0 * d_min
+    max_overlap = max(0.0, float(max_halo_fraction_of_patch)) * r_patch
+    r_int = min(base_overlap, max_overlap)
     r_halo = r_patch + r_int
 
     return r_patch, r_halo, d_min
