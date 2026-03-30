@@ -136,6 +136,33 @@ def extract_lowest_energy_bitstring(distribution, num_qubits, sparse_terms):
     return best_bitstring, float(best_energy)
 
 
+def extract_top_k_bitstrings(distribution, num_qubits, top_k=10):
+    """
+    Return top-k sampled bitstrings with their absolute (global) probabilities.
+
+    Probabilities are taken directly from the sampler output and therefore sum
+    to <= 1.0 over the reported top-k entries.
+    """
+    if top_k is None or top_k < 1:
+        top_k = 10
+
+    ranked = sorted(
+        distribution.items(),
+        key=lambda kv: (-float(kv[1]), int(kv[0])),
+    )[:int(top_k)]
+
+    out = []
+    for key, prob in ranked:
+        bitstring = to_bitstring(int(key), num_qubits)
+        bitstring.reverse()  # Keep ordering consistent with selected bitstrings.
+        out.append({
+            "bitstring": "".join(str(b) for b in bitstring),
+            "probability": float(prob),
+            "state_int": int(key),
+        })
+    return out
+
+
 def run_qaoa_aer(
     hamiltonian_path,
     reps=4,
@@ -147,6 +174,8 @@ def run_qaoa_aer(
     aer_max_parallel_experiments=1,
     aer_max_parallel_shots=1,
     log_backend_config=False,
+    return_topk=False,
+    top_k=10,
 ):
     """
     Complete QAOA pipeline (single run, random init).
@@ -164,7 +193,9 @@ def run_qaoa_aer(
         log_backend_config: Print effective Aer/OpenMP config for debugging
 
     Returns:
-        (best_bitstring, optimal_energy)
+        (best_bitstring, optimal_energy) by default.
+        If return_topk=True, returns:
+            (best_bitstring, optimal_energy, top_bitstrings)
     """
     t0 = time.time()
 
@@ -234,6 +265,9 @@ def run_qaoa_aer(
     best_bitstring, best_sample_energy = extract_lowest_energy_bitstring(
         distribution, num_qubits, sparse_terms
     )
+    top_bitstrings = extract_top_k_bitstrings(
+        distribution, num_qubits, top_k=top_k
+    ) if return_topk else None
 
     elapsed = time.time() - t0
     print(
@@ -244,6 +278,8 @@ def run_qaoa_aer(
         f"time={elapsed:.1f}s"
     )
 
+    if return_topk:
+        return best_bitstring, float(best_sample_energy), top_bitstrings
     return best_bitstring, float(best_sample_energy)
 
 def qaoa_test (
@@ -257,6 +293,8 @@ def qaoa_test (
     aer_max_parallel_experiments=1,
     aer_max_parallel_shots=1,
     log_backend_config=False,
+    return_topk=False,
+    top_k=10,
 ):
     """
     Test pipeline.
@@ -274,7 +312,9 @@ def qaoa_test (
         log_backend_config: Print effective Aer/OpenMP config for debugging
 
     Returns:
-        (best_bitstring, optimal_energy)
+        (best_bitstring, optimal_energy) by default.
+        If return_topk=True, returns:
+            (best_bitstring, optimal_energy, top_bitstrings)
     """
     t0 = time.time()
 
@@ -379,6 +419,9 @@ def qaoa_test (
     best_bitstring, best_sample_energy = extract_lowest_energy_bitstring(
         distribution, num_qubits, sparse_terms
     )
+    top_bitstrings = extract_top_k_bitstrings(
+        distribution, num_qubits, top_k=top_k
+    ) if return_topk else None
 
     elapsed = time.time() - t0
     print(
@@ -389,4 +432,6 @@ def qaoa_test (
         f"time={elapsed:.1f}s"
     )
 
+    if return_topk:
+        return best_bitstring, float(best_sample_energy), top_bitstrings
     return best_bitstring, float(best_sample_energy)
