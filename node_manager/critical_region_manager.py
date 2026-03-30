@@ -89,25 +89,29 @@ def detect_critical_regions(
     curvature_threshold = float(np.percentile(curvatures, curvature_threshold_percentile))
     high_curvature_mask = curvatures > curvature_threshold
 
-    edge_lengths = np.linalg.norm(pts - np.roll(pts, 1, axis=0), axis=1)
-    local_edge_ratio = np.zeros(n, dtype=float)
+    # Local edge-ratio should be geometric, not dependent on input ordering.
+    tree = cKDTree(pts)
+    k_ratio = min(6, n)
+    dists, _ = tree.query(pts, k=k_ratio)  # includes self at [:, 0]
+    local_edge_ratio = np.ones(n, dtype=float)
     for i in range(n):
-        prev_edge = edge_lengths[i]
-        next_edge = edge_lengths[(i + 1) % n]
-        local_edge_ratio[i] = max(prev_edge, next_edge) / (min(prev_edge, next_edge) + 1e-10)
+        nn = np.asarray(np.atleast_1d(dists[i])[1:], dtype=float)  # exclude self
+        nn = nn[nn > 1e-12]
+        if len(nn) >= 2:
+            local_edge_ratio[i] = nn.max() / (nn.min() + 1e-10)
     high_edge_ratio_mask = local_edge_ratio > edge_ratio_threshold
 
     poor_local_mesh = np.zeros(n, dtype=bool)
 
     critical_mask = high_curvature_mask | high_edge_ratio_mask | poor_local_mesh
 
-    # Minimal one-step expansion (same notebook behavior).
+    # Minimal one-step expansion to nearest spatial neighbors.
     if np.any(critical_mask):
         expanded = critical_mask.copy()
-        for i in range(n):
-            if critical_mask[i]:
-                expanded[(i - 1) % n] = True
-                expanded[(i + 1) % n] = True
+        k_expand = min(4, n)  # self + 3 nearest
+        _, nn_idx = tree.query(pts, k=k_expand)
+        for i in np.where(critical_mask)[0]:
+            expanded[np.atleast_1d(nn_idx[i])[1:]] = True
         critical_mask = expanded
 
     normal_mask = ~critical_mask
