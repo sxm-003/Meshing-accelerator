@@ -37,9 +37,7 @@ from orchestrator.visualize_patch_output import (
     combined_figure,
     single_patch_figure,
 )
-import matplotlib
-matplotlib.use("Agg")          # non-interactive backend safe for Dask workers
-import matplotlib.pyplot as plt
+
 
 
 
@@ -369,149 +367,6 @@ def build_hamiltonian_task(record: PatchRecord, ham_dir: str, rec_dir: str):
     record.save(rec_dir)
     return record
 
-
-@task
-def visualize_hamiltonian_coefficients(built_records, base_dir: str):
-    """
-    Produce a 4-panel Hamiltonian coefficient breakdown figure
-    (matching the style in updated_energy_func_test_ENHANCED.ipynb).
-
-    Aggregates decomposition data across all patches and saves
-    the figure to <base_dir>/hamiltonian_coefficients.png.
-    """
-    # --- Collect decomposition data from all records ---
-    all_scaled_norms = {}   # penalty_name -> list of norms across patches
-    all_raw_norms = {}
-    all_tuning = {}
-    all_term_counts = {}         # penalty_name -> total term count across patches
-    all_coeff_magnitudes = []    # flat list of |coeff| across all penalties/patches
-    total_qubits = []
-
-    for rec in built_records:
-        decomp = getattr(rec, 'decomposition', None)
-        if decomp is not None:
-            total_qubits.append(decomp['n_qubits'])
-            for name, norm in decomp['scaled_norms'].items():
-                all_scaled_norms.setdefault(name, []).append(norm)
-            for name, norm in decomp['penalty_norms'].items():
-                all_raw_norms.setdefault(name, []).append(norm)
-            for name, tf in decomp['tuning_factors'].items():
-                all_tuning[name] = tf
-
-            if 'scaled_penalties' in decomp:
-                for name, terms in decomp['scaled_penalties'].items():
-                    if isinstance(terms, dict):
-                        mags = np.abs(list(terms.values()))
-                    else:
-                        mags = [abs(float(t[2])) for t in terms]
-                    all_term_counts[name] = all_term_counts.get(name, 0) + len(mags)
-                    all_coeff_magnitudes.extend(mags)
-            elif 'term_counts' in decomp:
-                for name, cnt in decomp['term_counts'].items():
-                    all_term_counts[name] = all_term_counts.get(name, 0) + int(cnt)
-                all_coeff_magnitudes.extend(decomp.get('coeff_magnitudes', []))
-            continue
-
-        decomp_path = getattr(rec, "decomposition_path", None)
-        if not decomp_path:
-            continue
-        if not os.path.exists(decomp_path):
-            continue
-
-        with np.load(decomp_path, allow_pickle=False) as npz:
-            names = npz["penalty_names"].tolist()
-            scaled_norms = npz["scaled_norms"].tolist()
-            raw_norms = npz["raw_norms"].tolist()
-            tuning_factors = npz["tuning_factors"].tolist()
-            term_counts = npz["term_counts"].tolist() if "term_counts" in npz else [0] * len(names)
-            coeff_magnitudes = npz["coeff_magnitudes"].tolist() if "coeff_magnitudes" in npz else []
-            n_qubits = int(npz["n_qubits"][0]) if "n_qubits" in npz else None
-
-        if n_qubits is not None:
-            total_qubits.append(n_qubits)
-
-        for i, name in enumerate(names):
-            all_scaled_norms.setdefault(name, []).append(float(scaled_norms[i]))
-            all_raw_norms.setdefault(name, []).append(float(raw_norms[i]))
-            all_tuning[name] = float(tuning_factors[i])
-            all_term_counts[name] = all_term_counts.get(name, 0) + int(term_counts[i])
-        all_coeff_magnitudes.extend(float(c) for c in coeff_magnitudes)
-
-    if not all_scaled_norms:
-        print("  ⚠ No decomposition data — skipping Hamiltonian viz.")
-        return
-
-    # Averages across patches
-    names = sorted(all_scaled_norms.keys())
-    avg_scaled = [np.mean(all_scaled_norms[n]) for n in names]
-    avg_raw = [np.mean(all_raw_norms.get(n, [0])) for n in names]
-
-    fig, axes = plt.subplots(2, 2, figsize=(16, 12))
-    colors = plt.cm.Set3(np.linspace(0, 1, len(names)))
-
-    # ── Panel 1: Scaled contribution norms (bar chart) ──
-    ax = axes[0, 0]
-    bars = ax.bar(names, avg_scaled, color=colors, edgecolor='black', linewidth=1.5)
-    ax.set_ylabel('Norm of Scaled Coefficients', fontsize=11, fontweight='bold')
-    ax.set_title('Penalty Contribution Magnitudes (normalised + tuned)',
-                 fontsize=12, fontweight='bold')
-    ax.grid(True, alpha=0.3, axis='y')
-    for bar, val in zip(bars, avg_scaled):
-        ax.text(bar.get_x() + bar.get_width() / 2., bar.get_height(),
-                f'{val:.3f}', ha='center', va='bottom', fontsize=9, fontweight='bold')
-    ax.tick_params(axis='x', rotation=45)
-
-    # ── Panel 2: Number of Pauli terms per penalty ──
-    ax = axes[0, 1]
-    term_counts = [all_term_counts.get(n, 0) for n in names]
-    bars = ax.bar(names, term_counts, color=colors, edgecolor='black', linewidth=1.5)
-    ax.set_ylabel('Number of Pauli Terms (all patches)', fontsize=11, fontweight='bold')
-    ax.set_title('Total Generated Pauli Strings per Penalty',
-                 fontsize=12, fontweight='bold')
-    ax.grid(True, alpha=0.3, axis='y')
-    for bar, cnt in zip(bars, term_counts):
-        ax.text(bar.get_x() + bar.get_width() / 2., bar.get_height(),
-                f'{int(cnt)}', ha='center', va='bottom', fontsize=9, fontweight='bold')
-    ax.tick_params(axis='x', rotation=45)
-
-    # ── Panel 3: Raw vs Scaled norms (grouped bar) ──
-    ax = axes[1, 0]
-    x = np.arange(len(names))
-    width = 0.35
-    ax.bar(x - width / 2, avg_raw, width, label='Raw (untuned) Norm',
-           color='steelblue', alpha=0.8, edgecolor='black')
-    ax.bar(x + width / 2, avg_scaled, width, label='Scaled (normalised + tuned)',
-           color='coral', alpha=0.8, edgecolor='black')
-    ax.set_ylabel('Norm Value', fontsize=11, fontweight='bold')
-    ax.set_title('Raw vs Scaled Contribution Norms', fontsize=12, fontweight='bold')
-    ax.set_xticks(x)
-    ax.set_xticklabels(names, rotation=45, ha='right')
-    ax.legend(fontsize=10)
-    ax.grid(True, alpha=0.3, axis='y')
-
-    # ── Panel 4: Coefficient magnitude histogram ──
-    ax = axes[1, 1]
-    flat_coeffs = all_coeff_magnitudes
-    if flat_coeffs:
-        arr = np.array(flat_coeffs)
-        ax.hist(arr, bins=40, color='steelblue', edgecolor='black', alpha=0.7)
-        ax.set_xlabel('|Coefficient| Magnitude', fontsize=11, fontweight='bold')
-        ax.set_ylabel('Frequency', fontsize=11, fontweight='bold')
-        ax.set_title('Distribution of Coefficient Magnitudes (all patches)',
-                     fontsize=12, fontweight='bold')
-        ax.grid(True, alpha=0.3, axis='y')
-        stats_text = (f'Mean: {arr.mean():.4f}\n'
-                      f'Std:  {arr.std():.4f}\n'
-                      f'Max:  {arr.max():.4f}')
-        ax.text(0.98, 0.97, stats_text, transform=ax.transAxes, fontsize=10,
-                verticalalignment='top', horizontalalignment='right',
-                bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
-
-    plt.tight_layout()
-    out_path = os.path.join(base_dir, "hamiltonian_coefficients.png")
-    fig.savefig(out_path, dpi=150)
-    plt.close(fig)
-    print(f"\n✓ Hamiltonian coefficient breakdown saved to {out_path}")
 
 def _normalize_hpc_bitstring(bitstring):
     if isinstance(bitstring, str):
@@ -925,9 +780,6 @@ def mesh_hamiltonian_pipeline(
             smooth_iterations=smooth_iterations,
             formats=export_formats,
         )
-
-    # --- Hamiltonian coefficient visualization ---
-    visualize_hamiltonian_coefficients(built_records, str(base_dir))
 
     # --- Visualization (critical/QAOA patches only) ---
     all_traces = []
