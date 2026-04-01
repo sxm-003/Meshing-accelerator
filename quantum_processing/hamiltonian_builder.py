@@ -57,15 +57,6 @@ def sparse_terms_to_dict(terms, zero_tol=1e-12):
     return {k: v for k, v in out.items() if abs(v) > zero_tol}
 
 
-def key_to_sparse_term(key, coeff):
-    """compact key + coeff -> sparse tuple form."""
-    if key[0] == "Z":
-        return ("Z", [int(key[1])], float(coeff))
-    if key[0] == "ZZ":
-        return ("ZZ", [int(key[1]), int(key[2])], float(coeff))
-    raise ValueError(f"Unsupported key kind: {key[0]}")
-
-
 def scale_sparse_terms(terms, scale, zero_tol=1e-12):
     """Scale sparse term list and drop near-zero coefficients."""
     out = []
@@ -556,9 +547,8 @@ def hamiltonian_builder(
     use_collinearity_penalty=False, eta_col=0.0,#colinearity penalty 
     use_boundary_alignment=False, boundary_nodes=None, beta=0.0, #boundary geometry preserving penalty( only for boundary nodes)
     normalize=True,  # Enable normalization
-    tuning_factors=None,  #  Dict of tuning factors per penalty
-    return_decomposition=False,  # Return per-penalty breakdown for visualization
-    ):
+    tuning_factors=None,  # Dict of tuning factors per penalty
+):
 
     L = compute_L(r)
     n = len(phi)
@@ -655,33 +645,6 @@ def hamiltonian_builder(
         pauli_key_to_sparse_entry(key, coeff) for key, coeff in H_terms.items()
     ]
     H = SparsePauliOp.from_sparse_list(sparse_entries, num_qubits=n)
-
-    if return_decomposition:
-        # Build per-penalty scaled contributions (after normalization + tuning)
-        scaled_penalties = {}
-        scaled_norms = {}
-        for name, terms in untuned_penalties.items():
-            term_dict = untuned_penalty_dicts.get(name, {})
-            if not term_dict:
-                continue
-            factor = tuning.get(name, 1.0)
-            norm = penalty_norms[name]
-            scale = (factor / norm) if normalize else factor
-            scaled_dict = {k: v * scale for k, v in term_dict.items()}
-            scaled_penalties[name] = [
-                key_to_sparse_term(k, c) for k, c in scaled_dict.items()
-            ]
-            scaled_norms[name] = np.sqrt(sum(c**2 for c in scaled_dict.values()))
-
-        decomposition = {
-            'untuned_penalties': untuned_penalties,
-            'penalty_norms': penalty_norms,         # raw norms before scaling
-            'scaled_penalties': scaled_penalties,    # after normalization + tuning
-            'scaled_norms': scaled_norms,            # norms after scaling
-            'tuning_factors': dict(tuning),
-            'n_qubits': n,
-        }
-        return H, decomposition
 
     return H
 

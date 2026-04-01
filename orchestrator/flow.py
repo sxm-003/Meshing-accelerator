@@ -266,7 +266,7 @@ def build_hamiltonian_task(record: PatchRecord, ham_dir: str, rec_dir: str):
         'collinearity': 2, 'boundary_alignment': 1.5
     }
 
-    H, decomposition = hamiltonian_builder(
+    H = hamiltonian_builder(
         phi=phi,
         r=record.patch_nodes,
 
@@ -307,8 +307,6 @@ def build_hamiltonian_task(record: PatchRecord, ham_dir: str, rec_dir: str):
     # normalization and tuning
         normalize=True,
         tuning_factors=tuning_params,
-    # return per-penalty breakdown for visualization
-        return_decomposition=True,
         )
 
     record.phi = phi
@@ -331,39 +329,7 @@ def build_hamiltonian_task(record: PatchRecord, ham_dir: str, rec_dir: str):
         num_qubits=np.asarray([H.num_qubits], dtype=np.int32),
     )
 
-    # Save decomposition alongside Hamiltonian for later visualization
-    decomp_path = os.path.join(ham_dir, f"{record.patch_id}_decomp.npz")
-    penalty_names = list(decomposition["scaled_norms"].keys())
-    scaled_norms = [decomposition["scaled_norms"].get(k, 0.0) for k in penalty_names]
-    raw_norms = [decomposition["penalty_norms"].get(k, 0.0) for k in penalty_names]
-    tuning_factors = [decomposition["tuning_factors"].get(k, 1.0) for k in penalty_names]
-    scaled_penalties = decomposition.get("scaled_penalties", {})
-    term_counts = []
-    coeff_magnitudes = []
-    for name in penalty_names:
-        penalty_terms = scaled_penalties.get(name, {})
-        if isinstance(penalty_terms, dict):
-            term_counts.append(len(penalty_terms))
-            coeff_magnitudes.extend(np.abs(list(penalty_terms.values())))
-        else:
-            term_counts.append(len(penalty_terms))
-            coeff_magnitudes.extend(abs(float(t[2])) for t in penalty_terms)
-
-    np.savez_compressed(
-        decomp_path,
-        penalty_names=np.asarray(penalty_names),
-        scaled_norms=np.asarray(scaled_norms, dtype=float),
-        raw_norms=np.asarray(raw_norms, dtype=float),
-        tuning_factors=np.asarray(tuning_factors, dtype=float),
-        term_counts=np.asarray(term_counts, dtype=int),
-        coeff_magnitudes=np.asarray(coeff_magnitudes, dtype=float),
-        n_qubits=np.asarray([decomposition["n_qubits"]], dtype=int),
-    )
-
     record.hamiltonian_path = ham_path
-    record.decomposition_path = decomp_path
-    # Keep Dask payload small: full decomposition is persisted in decomp_path.
-    record.decomposition = None
     record.save(rec_dir)
     return record
 

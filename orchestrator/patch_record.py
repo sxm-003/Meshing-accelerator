@@ -15,10 +15,8 @@ class PatchRecord:
 
     patch_id: str = field(init=False)
     hamiltonian_path: Optional[str] = None
-    decomposition_path: Optional[str] = None
     bitstring: Optional[str] = None
     energy: Optional[float] = None
-    decomposition: Optional[dict] = field(default=None, repr=False)  # Hamiltonian penalty breakdown
 
     def __post_init__(self):
         arr = np.asarray(self.patch_nodes).round(6)
@@ -37,7 +35,6 @@ class PatchRecord:
                 "global_indices": None if self.global_indices is None else self.global_indices.tolist(),
                 "region_type": self.region_type,
                 "hamiltonian_path": self.hamiltonian_path,
-                "decomposition_path": self.decomposition_path,
                 "bitstring": self.bitstring,
                 "energy": self.energy,
             },
