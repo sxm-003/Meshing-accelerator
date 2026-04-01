@@ -823,4 +823,4 @@ def mesh_hamiltonian_pipeline(
         return {"qaoa_records": qaoa_records}
 
 if __name__ == "__main__":
-    mesh_hamiltonian_pipeline("data/sample.dxf")
+    mesh_hamiltonian_pipeline("data/sample.dxf", qaoa_backend="hpc")
