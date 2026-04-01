@@ -334,7 +334,7 @@ def build_hamiltonian_task(record: PatchRecord, ham_dir: str, rec_dir: str):
     return record
 
 
-def _normalize_hpc_bitstring(bitstring):
+def _normalize_qaoa_bitstring(bitstring):
     if isinstance(bitstring, str):
         s = bitstring.strip()
         if set(s) <= {"0", "1"}:
@@ -345,10 +345,50 @@ def _normalize_hpc_bitstring(bitstring):
         bitstring = bitstring.tolist()
 
     if isinstance(bitstring, (list, tuple)):
-        # Your HPC format: 0 -> 0, 1023 -> 1
-        return "".join("1" if int(x) != 0 else "0" for x in bitstring)
+        values = [int(x) for x in bitstring]
+        if set(values) <= {0, 1}:
+            return "".join(str(v) for v in values)
+        # HPC sentinel format: 0 -> 0, non-zero (e.g. 1023) -> 1
+        return "".join("1" if v != 0 else "0" for v in values)
 
     raise TypeError(f"Unsupported HPC bitstring type: {type(bitstring)!r}")
+
+
+def _resolve_qaoa_backend_config(
+    qaoa_backend: str,
+    qaoa_backend_config: Optional[dict],
+):
+    backend = str(qaoa_backend).strip().lower()
+    if backend not in {"hpc", "aer"}:
+        raise ValueError("qaoa_backend must be either 'hpc' or 'aer'")
+
+    if qaoa_backend_config is None:
+        config = {}
+    elif isinstance(qaoa_backend_config, dict):
+        config = dict(qaoa_backend_config)
+    else:
+        raise TypeError("qaoa_backend_config must be a dict or None")
+
+    if backend == "aer":
+        allowed_keys = {
+            "aer_max_parallel_threads",
+            "aer_max_parallel_experiments",
+            "aer_max_parallel_shots",
+            "log_backend_config",
+        }
+        unknown_keys = sorted(set(config) - allowed_keys)
+        if unknown_keys:
+            raise ValueError(
+                f"Unsupported Aer backend config keys: {unknown_keys}"
+            )
+        return backend, {
+            "aer_max_parallel_threads": int(config.get("aer_max_parallel_threads", 2)),
+            "aer_max_parallel_experiments": int(config.get("aer_max_parallel_experiments", 2)),
+            "aer_max_parallel_shots": int(config.get("aer_max_parallel_shots", 2)),
+            "log_backend_config": bool(config.get("log_backend_config", False)),
+        }
+
+    return backend, {}
 
 
 @task(
@@ -358,22 +398,23 @@ def _normalize_hpc_bitstring(bitstring):
 def run_qaoa_task(
     record: PatchRecord,
     rec_dir: str,
-    aer_max_parallel_threads: int = 1,
-    aer_max_parallel_experiments: int = 1,
-    aer_max_parallel_shots: int = 1,
-    log_backend_config: bool = False,
+    qaoa_backend: str = "hpc",
+    qaoa_backend_config: Optional[dict] = None,
 ):
-    # bitstring, energy = run_qaoa_aer(
-    #     record.hamiltonian_path,
-    #     aer_max_parallel_threads=aer_max_parallel_threads,
-    #     aer_max_parallel_experiments=aer_max_parallel_experiments,
-    #     aer_max_parallel_shots=aer_max_parallel_shots,
-    #     log_backend_config=log_backend_config,
-    # )
+    backend, backend_config = _resolve_qaoa_backend_config(
+        qaoa_backend,
+        qaoa_backend_config,
+    )
 
-    bitstring, energy = run_qaoa_hpc(record, rec_dir)
+    if backend == "aer":
+        bitstring, energy = run_qaoa_aer(
+            record.hamiltonian_path,
+            **backend_config,
+        )
+    else:
+        bitstring, energy = run_qaoa_hpc(record, rec_dir)
 
-    record.bitstring = _normalize_hpc_bitstring(bitstring)
+    record.bitstring = _normalize_qaoa_bitstring(bitstring)
     record.energy = float(energy)
 
     record.save(rec_dir)
@@ -529,10 +570,8 @@ def mesh_hamiltonian_pipeline(
     hamiltonian_concurrency: int = 64,
     parallel_qaoa: bool = True,
     qaoa_concurrency: int = 8,
-    qaoa_aer_max_parallel_threads: int = 2,
-    qaoa_aer_max_parallel_experiments: int = 2,
-    qaoa_aer_max_parallel_shots: int = 2,
-    qaoa_log_backend_config: bool = False,
+    qaoa_backend: str = "hpc",
+    qaoa_backend_config: Optional[dict] = None,
     adaptive_nodes: bool = True,
     L_fine: Optional[float] = None,
     L_coarse: Optional[float] = None,
@@ -562,12 +601,15 @@ def mesh_hamiltonian_pipeline(
         use_gaussian_merging: Enable Gaussian-weighted merging of overlapping patches
         hamiltonian_concurrency: Max number of in-flight Hamiltonian tasks.
         parallel_qaoa: If True, dispatch QAOA tasks to Dask workers in parallel.
-                       If False, run QAOA sequentially to avoid Aer/OpenMP conflicts.
+                       If False, run QAOA sequentially.
         qaoa_concurrency: Max number of in-flight QAOA tasks when parallel_qaoa=True.
-        qaoa_aer_max_parallel_threads: Aer threads per QAOA task.
-        qaoa_aer_max_parallel_experiments: Aer experiment-level parallelism.
-        qaoa_aer_max_parallel_shots: Aer shot-level parallelism.
-        qaoa_log_backend_config: Print Aer/OpenMP config from QAOA tasks.
+        qaoa_backend: Backend for critical-patch QAOA ("hpc" or "aer").
+        qaoa_backend_config: Optional backend-specific config dict.
+                             For "aer", supported keys are:
+                             "aer_max_parallel_threads",
+                             "aer_max_parallel_experiments",
+                             "aer_max_parallel_shots",
+                             "log_backend_config".
         adaptive_nodes: If True, use adaptive density node generation (finer near
                        boundaries/curvature, coarser in interior). If False, uniform grid.
         L_fine: Fine spacing for adaptive mode (auto from L if None)
@@ -590,6 +632,11 @@ def mesh_hamiltonian_pipeline(
 
     ham_dir = base_dir / "hamiltonians"
     rec_dir = base_dir / "records"
+
+    qaoa_backend, resolved_qaoa_backend_config = _resolve_qaoa_backend_config(
+        qaoa_backend,
+        qaoa_backend_config,
+    )
 
     ham_dir.mkdir(parents=True, exist_ok=True)
     rec_dir.mkdir(parents=True, exist_ok=True)
@@ -627,6 +674,7 @@ def mesh_hamiltonian_pipeline(
         f"\n  Hybrid patch records: critical={len(critical_records)}, "
         f"normal={len(normal_records)}"
     )
+    print(f"  QAOA backend: {qaoa_backend.upper()}")
 
     if hamiltonian_concurrency < 1:
         raise ValueError("hamiltonian_concurrency must be >= 1")
@@ -671,10 +719,8 @@ def mesh_hamiltonian_pipeline(
                     run_qaoa_task.submit(
                         r_light,
                         str(rec_dir),
-                        aer_max_parallel_threads=qaoa_aer_max_parallel_threads,
-                        aer_max_parallel_experiments=qaoa_aer_max_parallel_experiments,
-                        aer_max_parallel_shots=qaoa_aer_max_parallel_shots,
-                        log_backend_config=qaoa_log_backend_config,
+                        qaoa_backend=qaoa_backend,
+                        qaoa_backend_config=resolved_qaoa_backend_config,
                     )
                 )
 
@@ -698,10 +744,8 @@ def mesh_hamiltonian_pipeline(
                     run_qaoa_task(
                         r_light,
                         str(rec_dir),
-                        aer_max_parallel_threads=qaoa_aer_max_parallel_threads,
-                        aer_max_parallel_experiments=qaoa_aer_max_parallel_experiments,
-                        aer_max_parallel_shots=qaoa_aer_max_parallel_shots,
-                        log_backend_config=qaoa_log_backend_config,
+                        qaoa_backend=qaoa_backend,
+                        qaoa_backend_config=resolved_qaoa_backend_config,
                     )
                 )
     else:
