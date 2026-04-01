@@ -513,6 +513,22 @@ def visualize_hamiltonian_coefficients(built_records, base_dir: str):
     plt.close(fig)
     print(f"\n✓ Hamiltonian coefficient breakdown saved to {out_path}")
 
+def _normalize_hpc_bitstring(bitstring):
+    if isinstance(bitstring, str):
+        s = bitstring.strip()
+        if set(s) <= {"0", "1"}:
+            return s
+        raise ValueError(f"Unexpected string bitstring format: {bitstring}")
+
+    if isinstance(bitstring, np.ndarray):
+        bitstring = bitstring.tolist()
+
+    if isinstance(bitstring, (list, tuple)):
+        # Your HPC format: 0 -> 0, 1023 -> 1
+        return "".join("1" if int(x) != 0 else "0" for x in bitstring)
+
+    raise TypeError(f"Unsupported HPC bitstring type: {type(bitstring)!r}")
+
 
 @task(
     retries=1,
@@ -536,7 +552,7 @@ def run_qaoa_task(
 
     bitstring, energy = run_qaoa_hpc(record, rec_dir)
 
-    record.bitstring = bitstring if isinstance(bitstring, str) else "".join(str(b) for b in bitstring)
+    record.bitstring = _normalize_hpc_bitstring(bitstring)
     record.energy = float(energy)
 
     record.save(rec_dir)
