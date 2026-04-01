@@ -2,6 +2,9 @@
 from prefect import flow, task
 import os
 import numpy as np
+import subprocess
+import time
+import json 
 from collections import deque
 
 from scipy.spatial import cKDTree
@@ -189,7 +192,55 @@ def persist_patch_metadata_task(records, rec_dir: str):
     return len(records)
 
 
-@task()
+def run_qaoa_hpc(record: PatchRecord, local_result_dir: str):
+    if not record.hamiltonian_path:
+        raise ValueError(f"Patch {record.patch_id} has no Hamiltonian path.")
+
+    patch_id = record.patch_id
+    ham_local = Path(record.hamiltonian_path)
+
+    remote_ham = f"~/hpc_runs/{patch_id}.npz"
+    remote_out = f"~/hpc_runs/{patch_id}.json"
+    local_out = Path(local_result_dir) / f"{patch_id}_hpc.json"
+
+    subprocess.run(["ssh", "qsim", "mkdir -p ~/hpc_runs"], check=True)
+
+    subprocess.run(
+        ["scp", str(ham_local), f"qsim:{remote_ham}"],
+        check=True,
+    )
+
+    submit_cmd = f"sbatch ~/qaoa_jobs/run_qaoa.sh {remote_ham} {remote_out}"
+    result = subprocess.check_output(
+        ["ssh", "qsim", submit_cmd],
+        text=True,
+    ).strip()
+
+    job_id = result.split()[-1]
+
+    while True:
+        status = subprocess.check_output(
+            ["ssh", "qsim", f"squeue -h -j {job_id} -o %T"],
+            text=True,
+        ).strip()
+
+        if not status:
+            break
+
+        time.sleep(3)
+
+    subprocess.run(
+        ["scp", f"qsim:{remote_out}", str(local_out)],
+        check=True,
+    )
+
+    with open(local_out) as f:
+        data = json.load(f)
+
+    return data["bitstring"], float(data["energy"])
+
+
+@task
 
 def build_hamiltonian_task(record: PatchRecord, ham_dir: str, rec_dir: str):
     """
@@ -475,16 +526,18 @@ def run_qaoa_task(
     aer_max_parallel_shots: int = 1,
     log_backend_config: bool = False,
 ):
-    bitstring, energy = run_qaoa_aer(
-        record.hamiltonian_path,
-        aer_max_parallel_threads=aer_max_parallel_threads,
-        aer_max_parallel_experiments=aer_max_parallel_experiments,
-        aer_max_parallel_shots=aer_max_parallel_shots,
-        log_backend_config=log_backend_config,
-    )
+    # bitstring, energy = run_qaoa_aer(
+    #     record.hamiltonian_path,
+    #     aer_max_parallel_threads=aer_max_parallel_threads,
+    #     aer_max_parallel_experiments=aer_max_parallel_experiments,
+    #     aer_max_parallel_shots=aer_max_parallel_shots,
+    #     log_backend_config=log_backend_config,
+    # )
 
-    record.bitstring = "".join(str(b) for b in bitstring)
-    record.energy = energy
+    bitstring, energy = run_qaoa_hpc(record, rec_dir)
+
+    record.bitstring = bitstring if isinstance(bitstring, str) else "".join(str(b) for b in bitstring)
+    record.energy = float(energy)
 
     record.save(rec_dir)
     return record
