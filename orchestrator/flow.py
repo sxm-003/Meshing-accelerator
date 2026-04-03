@@ -1,11 +1,13 @@
 # orchestrator/flow.py
 from prefect import flow, task
+import ast
 import os
 import numpy as np
 import subprocess
 import time
 import json 
 from collections import deque
+from datetime import datetime
 
 from scipy.spatial import cKDTree
 
@@ -44,7 +46,7 @@ from orchestrator.visualize_patch_output import (
 
 @task
 def generate_nodes_task(dxf_path, jitter_factor=0.0, adaptive=False,
-                        L=None, L_fine=None, L_coarse=None,
+                        L_nodes=None, L_fine=None, L_coarse=None,
                         boundary_band=None, curvature_weight=0.5):
     """
     Generate nodes from DXF file.
@@ -61,7 +63,7 @@ def generate_nodes_task(dxf_path, jitter_factor=0.0, adaptive=False,
     if adaptive:
         nodes, interior_nodes, offset_nodes, boundary_nodes = generate_adaptive_nodes(
             dxf_path,
-            L=L,
+            L=L_nodes,
             L_fine=L_fine,
             L_coarse=L_coarse,
             boundary_band=boundary_band,
@@ -73,7 +75,9 @@ def generate_nodes_task(dxf_path, jitter_factor=0.0, adaptive=False,
               f"boundary={len(boundary_nodes)})")
     else:
         nodes, interior_nodes, offset_nodes, boundary_nodes = generate_crude_nodes(
-            dxf_path, jitter_factor=jitter_factor
+            dxf_path,
+            jitter_factor=jitter_factor,
+            L=L_nodes if L_nodes is not None else 0.4,
         )
     
     # CAD boundary nodes are stacked last: [interior, offset, boundary]
@@ -88,7 +92,7 @@ def generate_nodes_task(dxf_path, jitter_factor=0.0, adaptive=False,
 @task
 def generate_region_patches_task(
     nodes,
-    L,
+    L_patch,
     Q_max,
     overlap_factor=1.0,
     cad_boundary_idx=None,
@@ -106,7 +110,7 @@ def generate_region_patches_task(
     """
     region_data = build_hybrid_region_patches(
         nodes=nodes,
-        L=L,
+        L=L_patch,
         Q_max=Q_max,
         overlap_factor=overlap_factor,
         cad_boundary_idx=cad_boundary_idx,
@@ -190,25 +194,36 @@ def persist_patch_metadata_task(records, rec_dir: str):
     return len(records)
 
 
-def run_qaoa_hpc(record: PatchRecord, local_result_dir: str):
+def run_qaoa_hpc(
+    record: PatchRecord,
+    local_result_dir: str,
+    remote_run_dir: str = "~/hpc_runs",
+    remote_log_dir: str = "~/qaoa_logs",
+):
     if not record.hamiltonian_path:
         raise ValueError(f"Patch {record.patch_id} has no Hamiltonian path.")
 
     patch_id = record.patch_id
     ham_local = Path(record.hamiltonian_path)
 
-    remote_ham = f"~/hpc_runs/{patch_id}.npz"
-    remote_out = f"~/hpc_runs/{patch_id}.json"
+    remote_ham = f"{remote_run_dir}/{patch_id}.npz"
+    remote_out = f"{remote_run_dir}/{patch_id}.json"
     local_out = Path(local_result_dir) / f"{patch_id}_hpc.json"
 
-    subprocess.run(["ssh", "qsim", "mkdir -p ~/hpc_runs"], check=True)
+    subprocess.run(
+        ["ssh", "qsim", f"mkdir -p {remote_run_dir} {remote_log_dir}"],
+        check=True,
+    )
 
     subprocess.run(
         ["scp", str(ham_local), f"qsim:{remote_ham}"],
         check=True,
     )
 
-    submit_cmd = f"sbatch ~/qaoa_jobs/run_qaoa.sh {remote_ham} {remote_out}"
+    submit_cmd = (
+        f"sbatch -o /dev/null -e /dev/null ~/qaoa_jobs/run_qaoa.sh "
+        f"{remote_ham} {remote_out} {remote_log_dir}"
+    )
     result = subprocess.check_output(
         ["ssh", "qsim", submit_cmd],
         text=True,
@@ -227,15 +242,55 @@ def run_qaoa_hpc(record: PatchRecord, local_result_dir: str):
 
         time.sleep(3)
 
+    remote_result_path = None
+    candidate_remote_paths = [
+        remote_out,
+        f"{remote_run_dir}/test-{job_id}",
+        f"{remote_run_dir}/test-{job_id}.json",
+        f"~/hpc_runs/test-{job_id}",
+        f"~/hpc_runs/test-{job_id}.json",
+        f"~/test-{job_id}",
+        f"~/test-{job_id}.json",
+    ]
+    for candidate in candidate_remote_paths:
+        exists = subprocess.run(
+            ["ssh", "qsim", f"test -f {candidate}"],
+            check=False,
+        )
+        if exists.returncode == 0:
+            remote_result_path = candidate
+            break
+
+    if not remote_result_path:
+        raise FileNotFoundError(
+            f"No HPC result file found for patch {patch_id} / job {job_id}. "
+            f"Checked {remote_run_dir}, ~/hpc_runs, and ~. "
+            f"Expected log file under {remote_log_dir}/slurm-{job_id}.out."
+        )
+
     subprocess.run(
-        ["scp", f"qsim:{remote_out}", str(local_out)],
+        ["scp", f"qsim:{remote_result_path}", str(local_out)],
         check=True,
     )
 
-    with open(local_out) as f:
-        data = json.load(f)
+    raw_text = local_out.read_text().strip()
+    try:
+        data = json.loads(raw_text)
+    except json.JSONDecodeError:
+        data = ast.literal_eval(raw_text)
 
-    return data["bitstring"], float(data["energy"])
+    if isinstance(data, dict):
+        bitstring = data["bitstring"]
+        energy = data.get("energy")
+    elif isinstance(data, (list, tuple)):
+        bitstring = data
+        energy = None
+    else:
+        raise ValueError(
+            f"Unsupported HPC result payload type for job {job_id}: {type(data)!r}"
+        )
+
+    return bitstring, (None if energy is None else float(energy))
 
 
 @task
@@ -388,7 +443,19 @@ def _resolve_qaoa_backend_config(
             "log_backend_config": bool(config.get("log_backend_config", False)),
         }
 
-    return backend, {}
+    allowed_keys = {
+        "remote_run_dir",
+        "remote_log_dir",
+    }
+    unknown_keys = sorted(set(config) - allowed_keys)
+    if unknown_keys:
+        raise ValueError(
+            f"Unsupported HPC backend config keys: {unknown_keys}"
+        )
+    return backend, {
+        "remote_run_dir": config.get("remote_run_dir"),
+        "remote_log_dir": config.get("remote_log_dir"),
+    }
 
 
 @task(
@@ -412,10 +479,15 @@ def run_qaoa_task(
             **backend_config,
         )
     else:
-        bitstring, energy = run_qaoa_hpc(record, rec_dir)
+        bitstring, energy = run_qaoa_hpc(
+            record,
+            rec_dir,
+            remote_run_dir=backend_config.get("remote_run_dir", "~/hpc_runs"),
+            remote_log_dir=backend_config.get("remote_log_dir", "~/qaoa_logs"),
+        )
 
     record.bitstring = _normalize_qaoa_bitstring(bitstring)
-    record.energy = float(energy)
+    record.energy = None if energy is None else float(energy)
 
     record.save(rec_dir)
     return record
@@ -562,8 +634,9 @@ def build_mesh_task(nodes, merged_indices, dxf_path, output_dir,
 ))
 def mesh_hamiltonian_pipeline(
     dxf_path: str,
-    L: float = 0.1,
-    Q_max: int = 10,
+    L_patch: float = 30,
+    L_nodes: float = 15,
+    Q_max: int = 20,
     overlap_factor: float = 1.5,
     jitter_factor: float = 0.0,
     use_gaussian_merging: bool = True,
@@ -572,7 +645,7 @@ def mesh_hamiltonian_pipeline(
     qaoa_concurrency: int = 8,
     qaoa_backend: str = "hpc",
     qaoa_backend_config: Optional[dict] = None,
-    adaptive_nodes: bool = True,
+    adaptive_nodes: bool = False,
     L_fine: Optional[float] = None,
     L_coarse: Optional[float] = None,
     curvature_weight: float = 0.5,
@@ -594,7 +667,8 @@ def mesh_hamiltonian_pipeline(
     
     Args:
         dxf_path: Path to DXF file with mesh nodes
-        L: Characteristic length scale for patch generation
+        L_patch: Characteristic length scale used for patching / overlap / merging
+        L_nodes: Base node spacing used by crude generation and as the adaptive fallback
         Q_max: Maximum qubits per patch
         overlap_factor: Controls overlap between patches (0.0=no overlap, 1.0=standard, >1.0=more)
         jitter_factor: Random jitter for node generation (0.0=uniform grid, 1.0=full jitter)
@@ -610,10 +684,14 @@ def mesh_hamiltonian_pipeline(
                              "aer_max_parallel_experiments",
                              "aer_max_parallel_shots",
                              "log_backend_config".
+                             For "hpc", supported keys are:
+                             "remote_run_dir",
+                             "remote_log_dir".
+                             If omitted, run-scoped remote folders are created automatically.
         adaptive_nodes: If True, use adaptive density node generation (finer near
                        boundaries/curvature, coarser in interior). If False, uniform grid.
-        L_fine: Fine spacing for adaptive mode (auto from L if None)
-        L_coarse: Coarse spacing for adaptive mode (auto from L if None)
+        L_fine: Fine spacing for adaptive mode (auto from L_nodes if None)
+        L_coarse: Coarse spacing for adaptive mode (auto from L_nodes if None)
         curvature_weight: How much boundary curvature affects node density (0..1)
         use_critical_regions: Enable critical-vs-normal region segmentation.
         critical_curvature_percentile: Curvature percentile threshold for critical nodes.
@@ -637,6 +715,19 @@ def mesh_hamiltonian_pipeline(
         qaoa_backend,
         qaoa_backend_config,
     )
+    effective_qaoa_backend_config = dict(resolved_qaoa_backend_config)
+    if qaoa_backend == "hpc":
+        remote_run_name = (
+            f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{run_id}"
+        )
+        if not effective_qaoa_backend_config.get("remote_run_dir"):
+            effective_qaoa_backend_config["remote_run_dir"] = (
+                f"~/hpc_runs/{remote_run_name}"
+            )
+        if not effective_qaoa_backend_config.get("remote_log_dir"):
+            effective_qaoa_backend_config["remote_log_dir"] = (
+                f"~/qaoa_logs/{remote_run_name}"
+            )
 
     ham_dir.mkdir(parents=True, exist_ok=True)
     rec_dir.mkdir(parents=True, exist_ok=True)
@@ -646,14 +737,14 @@ def mesh_hamiltonian_pipeline(
         dxf_path,
         jitter_factor=jitter_factor,
         adaptive=adaptive_nodes,
-        L=L,
+        L_nodes=L_nodes,
         L_fine=L_fine,
         L_coarse=L_coarse,
         curvature_weight=curvature_weight,
     )
     region_data = generate_region_patches_task(
         nodes=nodes,
-        L=L,
+        L_patch=L_patch,
         Q_max=Q_max,
         overlap_factor=overlap_factor,
         cad_boundary_idx=cad_boundary_idx,
@@ -675,6 +766,13 @@ def mesh_hamiltonian_pipeline(
         f"normal={len(normal_records)}"
     )
     print(f"  QAOA backend: {qaoa_backend.upper()}")
+    print(
+        f"  Length scales: L_patch={L_patch}, L_nodes={L_nodes}, "
+        f"adaptive={adaptive_nodes}"
+    )
+    if qaoa_backend == "hpc":
+        print(f"  Remote HPC run dir: {effective_qaoa_backend_config['remote_run_dir']}")
+        print(f"  Remote HPC log dir: {effective_qaoa_backend_config['remote_log_dir']}")
 
     if hamiltonian_concurrency < 1:
         raise ValueError("hamiltonian_concurrency must be >= 1")
@@ -720,7 +818,7 @@ def mesh_hamiltonian_pipeline(
                         r_light,
                         str(rec_dir),
                         qaoa_backend=qaoa_backend,
-                        qaoa_backend_config=resolved_qaoa_backend_config,
+                        qaoa_backend_config=effective_qaoa_backend_config,
                     )
                 )
 
@@ -745,7 +843,7 @@ def mesh_hamiltonian_pipeline(
                         r_light,
                         str(rec_dir),
                         qaoa_backend=qaoa_backend,
-                        qaoa_backend_config=resolved_qaoa_backend_config,
+                        qaoa_backend_config=effective_qaoa_backend_config,
                     )
                 )
     else:
@@ -757,7 +855,7 @@ def mesh_hamiltonian_pipeline(
     merged_indices = normal_indices.copy()
     if use_gaussian_merging:
         if qaoa_records:
-            merged_critical_indices = merge_patches_gaussian_task(qaoa_records, nodes, L)
+            merged_critical_indices = merge_patches_gaussian_task(qaoa_records, nodes, L_patch)
             merged_critical_indices = np.asarray(merged_critical_indices, dtype=np.intp)
             print(f"\n✓ Critical QAOA merge contains {len(merged_critical_indices)} unique nodes")
         else:
@@ -823,4 +921,4 @@ def mesh_hamiltonian_pipeline(
         return {"qaoa_records": qaoa_records}
 
 if __name__ == "__main__":
-    mesh_hamiltonian_pipeline("data/sample.dxf", qaoa_backend="hpc")
+    mesh_hamiltonian_pipeline("data/hpc_test_sq.dxf", qaoa_backend="hpc")
