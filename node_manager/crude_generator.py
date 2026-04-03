@@ -326,12 +326,13 @@ def adaptive_jittered_grid_shapely(
     pts = np.array(pts, dtype=float)
     return validator.filter_points(pts, strict=False)
 
-def generate_crude_nodes(path, jitter_factor=0.0):
+def generate_crude_nodes(path, jitter_factor=0.0, L=0.4):
     """
     Generate nodes for mesh from DXF file using uniform grid with optional jitter.
     
     Args:
         path: Path to DXF file
+        L: Base node spacing / characteristic length scale for crude generation
         jitter_factor: Random jitter amount (0.0=uniform grid, 1.0=full jitter)
                       Default 0.0 for consistent, reproducible meshes
     
@@ -350,21 +351,29 @@ def generate_crude_nodes(path, jitter_factor=0.0):
     validator = GeometryValidator(polygons)
     polygons = validator.polygons
 
+    boundary_spacing = max(0.125 * float(L), 1e-6)
+    offset_spacing = max(0.25 * float(L), 1e-6)
+    offset_distances = [
+        0.125 * float(L),
+        0.30 * float(L),
+        0.625 * float(L),
+    ]
+
     boundary_nodes = sample_boundaries_shapely(
         polygons,
-        spacing=0.05
+        spacing=boundary_spacing,
     )
 
     offset_nodes = offset_boundary_layers(
         polygons,
-        offsets=[0.05, 0.12, 0.25],
-        spacing=0.1
+        offsets=offset_distances,
+        spacing=offset_spacing,
     )
 
     # Use uniform grid with optional jitter
     interior_nodes = uniform_grid_shapely(
         polygons,
-        L=0.4,  # Characteristic length scale
+        L=L,
         jitter_factor=jitter_factor,  # 0.0 = uniform, >0 = jittered
         validator=validator,
     )
