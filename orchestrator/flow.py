@@ -293,6 +293,235 @@ def run_qaoa_hpc(
     return bitstring, (None if energy is None else float(energy))
 
 
+def _ensure_hpc_remote_dirs(remote_run_dir: str, remote_log_dir: str):
+    subprocess.run(
+        ["ssh", "qsim", f"mkdir -p {remote_run_dir} {remote_log_dir}"],
+        check=True,
+    )
+
+
+def _stage_qaoa_hpc_hamiltonians(records, remote_run_dir: str):
+    records = list(records)
+    if not records:
+        return
+
+    local_hamiltonians = []
+    for record in records:
+        if not record.hamiltonian_path:
+            raise ValueError(f"Patch {record.patch_id} has no Hamiltonian path.")
+
+        ham_local = Path(record.hamiltonian_path)
+        expected_name = f"{record.patch_id}.npz"
+        if ham_local.name != expected_name:
+            raise ValueError(
+                "Batch HPC staging expects Hamiltonians to already be stored as "
+                f"{expected_name}, got {ham_local.name!r} for patch {record.patch_id}."
+            )
+
+        local_hamiltonians.append(str(ham_local))
+
+    # Stage the next submission wave in one transfer to avoid paying the SSH/SCP
+    # connection overhead once per patch.
+    subprocess.run(
+        ["scp", *local_hamiltonians, f"qsim:{remote_run_dir}/"],
+        check=True,
+    )
+
+
+def _submit_qaoa_hpc_job(
+    record: PatchRecord,
+    remote_run_dir: str,
+    remote_log_dir: str,
+    local_hpc_result_dir: Path,
+):
+    if not record.hamiltonian_path:
+        raise ValueError(f"Patch {record.patch_id} has no Hamiltonian path.")
+
+    patch_id = record.patch_id
+    remote_ham = f"{remote_run_dir}/{patch_id}.npz"
+    remote_out = f"{remote_run_dir}/{patch_id}.json"
+
+    submit_cmd = (
+        f"sbatch -o /dev/null -e /dev/null ~/qaoa_jobs/run_qaoa.sh "
+        f"{remote_ham} {remote_out} {remote_log_dir}"
+    )
+    result = subprocess.check_output(
+        ["ssh", "qsim", submit_cmd],
+        text=True,
+    ).strip()
+    job_id = result.split()[-1]
+
+    return {
+        "record": record,
+        "patch_id": patch_id,
+        "job_id": job_id,
+        "remote_out": remote_out,
+        "remote_log": f"{remote_log_dir}/slurm-{job_id}.out",
+        "local_out": local_hpc_result_dir / f"{patch_id}.json",
+        "missing_result_polls": 0,
+    }
+
+
+def _poll_hpc_job_states(job_ids):
+    if not job_ids:
+        return {}
+
+    joined_ids = ",".join(str(job_id) for job_id in job_ids)
+    output = subprocess.check_output(
+        ["ssh", "qsim", f"squeue -h -j {joined_ids} -o '%i|%T'"],
+        text=True,
+    ).strip()
+
+    states = {}
+    for line in output.splitlines():
+        if "|" not in line:
+            continue
+        job_id, status = line.split("|", 1)
+        states[job_id.strip()] = status.strip()
+    return states
+
+
+def _list_remote_hpc_results(remote_run_dir: str):
+    output = subprocess.check_output(
+        ["ssh", "qsim", f"find {remote_run_dir} -maxdepth 1 -type f -name '*.json' -printf '%f\\n'"],
+        text=True,
+    ).strip()
+    return {line.strip() for line in output.splitlines() if line.strip()}
+
+
+def _fetch_remote_log_tail(remote_log_path: str, n_lines: int = 80):
+    return subprocess.check_output(
+        [
+            "ssh",
+            "qsim",
+            f"tail -n {int(n_lines)} {remote_log_path} 2>/dev/null || echo NO_LOG:{remote_log_path}",
+        ],
+        text=True,
+    )
+
+
+def _load_hpc_result_payload(local_out: Path):
+    raw_text = local_out.read_text().strip()
+    try:
+        data = json.loads(raw_text)
+    except json.JSONDecodeError:
+        data = ast.literal_eval(raw_text)
+
+    if isinstance(data, dict):
+        bitstring = data["bitstring"]
+        energy = data.get("energy")
+    elif isinstance(data, (list, tuple)):
+        bitstring = data
+        energy = None
+    else:
+        raise ValueError(
+            f"Unsupported HPC result payload type in {local_out}: {type(data)!r}"
+        )
+
+    return bitstring, (None if energy is None else float(energy))
+
+
+def run_qaoa_hpc_batch(
+    records,
+    local_result_dir: str,
+    remote_run_dir: str = "~/hpc_runs",
+    remote_log_dir: str = "~/qaoa_logs",
+    poll_interval_seconds: int = 60,
+    max_outstanding_jobs: Optional[int] = None,
+):
+    records = list(records)
+    if not records:
+        return []
+
+    poll_interval_seconds = max(1, int(poll_interval_seconds))
+    if max_outstanding_jobs is None:
+        max_outstanding_jobs = len(records)
+    max_outstanding_jobs = max(1, int(max_outstanding_jobs))
+
+    local_hpc_result_dir = Path(local_result_dir) / "hpc_results"
+    local_hpc_result_dir.mkdir(parents=True, exist_ok=True)
+
+    _ensure_hpc_remote_dirs(remote_run_dir, remote_log_dir)
+
+    pending_records = deque(records)
+    active_jobs = {}
+    completed_records = {}
+
+    while pending_records or active_jobs:
+        if pending_records and len(active_jobs) < max_outstanding_jobs:
+            wave_records = []
+            while pending_records and len(active_jobs) + len(wave_records) < max_outstanding_jobs:
+                wave_records.append(pending_records.popleft())
+
+            _stage_qaoa_hpc_hamiltonians(
+                wave_records,
+                remote_run_dir=remote_run_dir,
+            )
+
+            for record in wave_records:
+                handle = _submit_qaoa_hpc_job(
+                    record,
+                    remote_run_dir=remote_run_dir,
+                    remote_log_dir=remote_log_dir,
+                    local_hpc_result_dir=local_hpc_result_dir,
+                )
+                active_jobs[handle["job_id"]] = handle
+
+        if not active_jobs:
+            continue
+
+        active_states = _poll_hpc_job_states(active_jobs.keys())
+        available_results = _list_remote_hpc_results(remote_run_dir)
+
+        ready_to_fetch = []
+        for job_id, handle in list(active_jobs.items()):
+            remote_filename = Path(handle["remote_out"]).name
+            if job_id in active_states:
+                continue
+
+            if remote_filename in available_results:
+                ready_to_fetch.append(handle)
+                active_jobs.pop(job_id)
+                continue
+
+            handle["missing_result_polls"] += 1
+            if handle["missing_result_polls"] >= 3:
+                log_tail = _fetch_remote_log_tail(handle["remote_log"])
+                raise FileNotFoundError(
+                    f"No HPC result file found for patch {handle['patch_id']} / job {job_id}. "
+                    f"Checked {remote_run_dir}. Expected result file {handle['remote_out']} "
+                    f"and log file {handle['remote_log']}.\n\n"
+                    f"--- Tail of Slurm log ---\n{log_tail}"
+                )
+
+        if ready_to_fetch:
+            subprocess.run(
+                [
+                    "scp",
+                    *[f"qsim:{handle['remote_out']}" for handle in ready_to_fetch],
+                    str(local_hpc_result_dir),
+                ],
+                check=True,
+            )
+
+            for handle in ready_to_fetch:
+                bitstring, energy = _load_hpc_result_payload(handle["local_out"])
+                record = handle["record"]
+                record.bitstring = _normalize_qaoa_bitstring(bitstring)
+                record.energy = None if energy is None else float(energy)
+                record.save(local_result_dir)
+                completed_records[record.patch_id] = record
+
+        if active_jobs:
+            time.sleep(poll_interval_seconds)
+
+    return [
+        completed_records[record.patch_id]
+        for record in records
+        if record.patch_id in completed_records
+    ]
+
+
 @task
 
 def build_hamiltonian_task(record: PatchRecord, ham_dir: str, rec_dir: str):
@@ -446,6 +675,7 @@ def _resolve_qaoa_backend_config(
     allowed_keys = {
         "remote_run_dir",
         "remote_log_dir",
+        "poll_interval_seconds",
     }
     unknown_keys = sorted(set(config) - allowed_keys)
     if unknown_keys:
@@ -455,6 +685,7 @@ def _resolve_qaoa_backend_config(
     return backend, {
         "remote_run_dir": config.get("remote_run_dir"),
         "remote_log_dir": config.get("remote_log_dir"),
+        "poll_interval_seconds": int(config.get("poll_interval_seconds", 15)),
     }
 
 
@@ -674,9 +905,10 @@ def mesh_hamiltonian_pipeline(
         jitter_factor: Random jitter for node generation (0.0=uniform grid, 1.0=full jitter)
         use_gaussian_merging: Enable Gaussian-weighted merging of overlapping patches
         hamiltonian_concurrency: Max number of in-flight Hamiltonian tasks.
-        parallel_qaoa: If True, dispatch QAOA tasks to Dask workers in parallel.
-                       If False, run QAOA sequentially.
-        qaoa_concurrency: Max number of in-flight QAOA tasks when parallel_qaoa=True.
+        parallel_qaoa: If True, allow multiple QAOA jobs/runs to be outstanding at once.
+                       If False, process QAOA one patch at a time.
+        qaoa_concurrency: For Aer, max number of in-flight QAOA tasks.
+                          For HPC, max number of outstanding submitted jobs.
         qaoa_backend: Backend for critical-patch QAOA ("hpc" or "aer").
         qaoa_backend_config: Optional backend-specific config dict.
                              For "aer", supported keys are:
@@ -686,7 +918,8 @@ def mesh_hamiltonian_pipeline(
                              "log_backend_config".
                              For "hpc", supported keys are:
                              "remote_run_dir",
-                             "remote_log_dir".
+                             "remote_log_dir",
+                             "poll_interval_seconds".
                              If omitted, run-scoped remote folders are created automatically.
         adaptive_nodes: If True, use adaptive density node generation (finer near
                        boundaries/curvature, coarser in interior). If False, uniform grid.
@@ -773,6 +1006,11 @@ def mesh_hamiltonian_pipeline(
     if qaoa_backend == "hpc":
         print(f"  Remote HPC run dir: {effective_qaoa_backend_config['remote_run_dir']}")
         print(f"  Remote HPC log dir: {effective_qaoa_backend_config['remote_log_dir']}")
+        print(
+            "  HPC submission strategy: "
+            f"max_outstanding_jobs={qaoa_concurrency if parallel_qaoa else 1}, "
+            f"poll_interval={effective_qaoa_backend_config['poll_interval_seconds']}s"
+        )
 
     if hamiltonian_concurrency < 1:
         raise ValueError("hamiltonian_concurrency must be >= 1")
@@ -799,10 +1037,19 @@ def mesh_hamiltonian_pipeline(
     # QAOA is only applied to critical patches.
     qaoa_records = []
     if built_records:
-        if parallel_qaoa:
+        if qaoa_backend == "hpc":
             if qaoa_concurrency < 1:
                 raise ValueError("qaoa_concurrency must be >= 1")
 
+            qaoa_records = run_qaoa_hpc_batch(
+                built_records,
+                str(rec_dir),
+                remote_run_dir=effective_qaoa_backend_config.get("remote_run_dir", "~/hpc_runs"),
+                remote_log_dir=effective_qaoa_backend_config.get("remote_log_dir", "~/qaoa_logs"),
+                poll_interval_seconds=effective_qaoa_backend_config.get("poll_interval_seconds", 15),
+                max_outstanding_jobs=qaoa_concurrency if parallel_qaoa else 1,
+            )
+        elif parallel_qaoa:
             qaoa_futures = deque()
             for r in built_records:
                 r_light = PatchRecord(
@@ -822,7 +1069,6 @@ def mesh_hamiltonian_pipeline(
                     )
                 )
 
-                # Bound the number of in-flight QAOA tasks to avoid oversubscription.
                 if len(qaoa_futures) >= qaoa_concurrency:
                     qaoa_records.append(qaoa_futures.popleft().result())
 
