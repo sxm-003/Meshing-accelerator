@@ -194,6 +194,36 @@ def persist_patch_metadata_task(records, rec_dir: str):
     return len(records)
 
 
+_QSIM_HOST = "qsim"
+_QSIM_CONTROL_PATH = "/tmp/meshopt_qsim_mux_%C"
+
+
+def _qsim_ssh_options():
+    return [
+        "-o", "ControlMaster=auto",
+        "-o", "ControlPersist=600",
+        "-o", f"ControlPath={_QSIM_CONTROL_PATH}",
+        "-o", "LogLevel=ERROR",
+    ]
+
+
+def _qsim_ssh_command(remote_cmd: str):
+    return ["ssh", *_qsim_ssh_options(), _QSIM_HOST, remote_cmd]
+
+
+def _qsim_scp_command(*paths: str):
+    return ["scp", "-q", *_qsim_ssh_options(), *paths]
+
+
+def _close_qsim_ssh_master():
+    subprocess.run(
+        ["ssh", *_qsim_ssh_options(), "-O", "exit", _QSIM_HOST],
+        check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+
 def run_qaoa_hpc(
     record: PatchRecord,
     local_result_dir: str,
@@ -210,68 +240,71 @@ def run_qaoa_hpc(
     remote_out = f"{remote_run_dir}/{patch_id}.json"
     local_out = Path(local_result_dir) / f"{patch_id}_hpc.json"
 
-    subprocess.run(
-        ["ssh", "qsim", f"mkdir -p {remote_run_dir} {remote_log_dir}"],
-        check=True,
-    )
+    try:
+        subprocess.run(
+            _qsim_ssh_command(f"mkdir -p {remote_run_dir} {remote_log_dir}"),
+            check=True,
+        )
 
-    subprocess.run(
-        ["scp", str(ham_local), f"qsim:{remote_ham}"],
-        check=True,
-    )
+        subprocess.run(
+            _qsim_scp_command(str(ham_local), f"{_QSIM_HOST}:{remote_ham}"),
+            check=True,
+        )
 
-    submit_cmd = (
-        f"sbatch -o /dev/null -e /dev/null ~/qaoa_jobs/run_qaoa.sh "
-        f"{remote_ham} {remote_out} {remote_log_dir}"
-    )
-    result = subprocess.check_output(
-        ["ssh", "qsim", submit_cmd],
-        text=True,
-    ).strip()
-
-    job_id = result.split()[-1]
-
-    while True:
-        status = subprocess.check_output(
-            ["ssh", "qsim", f"squeue -h -j {job_id} -o %T"],
+        submit_cmd = (
+            f"sbatch -o /dev/null -e /dev/null ~/qaoa_jobs/run_qaoa.sh "
+            f"{remote_ham} {remote_out} {remote_log_dir}"
+        )
+        result = subprocess.check_output(
+            _qsim_ssh_command(submit_cmd),
             text=True,
         ).strip()
 
-        if not status:
-            break
+        job_id = result.split()[-1]
 
-        time.sleep(3)
+        while True:
+            status = subprocess.check_output(
+                _qsim_ssh_command(f"squeue -h -j {job_id} -o %T"),
+                text=True,
+            ).strip()
 
-    remote_result_path = None
-    candidate_remote_paths = [
-        remote_out,
-        f"{remote_run_dir}/test-{job_id}",
-        f"{remote_run_dir}/test-{job_id}.json",
-        f"~/hpc_runs/test-{job_id}",
-        f"~/hpc_runs/test-{job_id}.json",
-        f"~/test-{job_id}",
-        f"~/test-{job_id}.json",
-    ]
-    for candidate in candidate_remote_paths:
-        exists = subprocess.run(
-            ["ssh", "qsim", f"test -f {candidate}"],
-            check=False,
+            if not status:
+                break
+
+            time.sleep(3)
+
+        remote_result_path = None
+        candidate_remote_paths = [
+            remote_out,
+            f"{remote_run_dir}/test-{job_id}",
+            f"{remote_run_dir}/test-{job_id}.json",
+            f"~/hpc_runs/test-{job_id}",
+            f"~/hpc_runs/test-{job_id}.json",
+            f"~/test-{job_id}",
+            f"~/test-{job_id}.json",
+        ]
+        for candidate in candidate_remote_paths:
+            exists = subprocess.run(
+                _qsim_ssh_command(f"test -f {candidate}"),
+                check=False,
+            )
+            if exists.returncode == 0:
+                remote_result_path = candidate
+                break
+
+        if not remote_result_path:
+            raise FileNotFoundError(
+                f"No HPC result file found for patch {patch_id} / job {job_id}. "
+                f"Checked {remote_run_dir}, ~/hpc_runs, and ~. "
+                f"Expected log file under {remote_log_dir}/slurm-{job_id}.out."
+            )
+
+        subprocess.run(
+            _qsim_scp_command(f"{_QSIM_HOST}:{remote_result_path}", str(local_out)),
+            check=True,
         )
-        if exists.returncode == 0:
-            remote_result_path = candidate
-            break
-
-    if not remote_result_path:
-        raise FileNotFoundError(
-            f"No HPC result file found for patch {patch_id} / job {job_id}. "
-            f"Checked {remote_run_dir}, ~/hpc_runs, and ~. "
-            f"Expected log file under {remote_log_dir}/slurm-{job_id}.out."
-        )
-
-    subprocess.run(
-        ["scp", f"qsim:{remote_result_path}", str(local_out)],
-        check=True,
-    )
+    finally:
+        _close_qsim_ssh_master()
 
     raw_text = local_out.read_text().strip()
     try:
@@ -295,7 +328,7 @@ def run_qaoa_hpc(
 
 def _ensure_hpc_remote_dirs(remote_run_dir: str, remote_log_dir: str):
     subprocess.run(
-        ["ssh", "qsim", f"mkdir -p {remote_run_dir} {remote_log_dir}"],
+        _qsim_ssh_command(f"mkdir -p {remote_run_dir} {remote_log_dir}"),
         check=True,
     )
 
@@ -323,7 +356,7 @@ def _stage_qaoa_hpc_hamiltonians(records, remote_run_dir: str):
     # Stage the next submission wave in one transfer to avoid paying the SSH/SCP
     # connection overhead once per patch.
     subprocess.run(
-        ["scp", *local_hamiltonians, f"qsim:{remote_run_dir}/"],
+        _qsim_scp_command(*local_hamiltonians, f"{_QSIM_HOST}:{remote_run_dir}/"),
         check=True,
     )
 
@@ -346,7 +379,7 @@ def _submit_qaoa_hpc_job(
         f"{remote_ham} {remote_out} {remote_log_dir}"
     )
     result = subprocess.check_output(
-        ["ssh", "qsim", submit_cmd],
+        _qsim_ssh_command(submit_cmd),
         text=True,
     ).strip()
     job_id = result.split()[-1]
@@ -368,7 +401,7 @@ def _poll_hpc_job_states(job_ids):
 
     joined_ids = ",".join(str(job_id) for job_id in job_ids)
     output = subprocess.check_output(
-        ["ssh", "qsim", f"squeue -h -j {joined_ids} -o '%i|%T'"],
+        _qsim_ssh_command(f"squeue -h -j {joined_ids} -o '%i|%T'"),
         text=True,
     ).strip()
 
@@ -383,7 +416,9 @@ def _poll_hpc_job_states(job_ids):
 
 def _list_remote_hpc_results(remote_run_dir: str):
     output = subprocess.check_output(
-        ["ssh", "qsim", f"find {remote_run_dir} -maxdepth 1 -type f -name '*.json' -printf '%f\\n'"],
+        _qsim_ssh_command(
+            f"find {remote_run_dir} -maxdepth 1 -type f -name '*.json' -printf '%f\\n'"
+        ),
         text=True,
     ).strip()
     return {line.strip() for line in output.splitlines() if line.strip()}
@@ -391,11 +426,9 @@ def _list_remote_hpc_results(remote_run_dir: str):
 
 def _fetch_remote_log_tail(remote_log_path: str, n_lines: int = 80):
     return subprocess.check_output(
-        [
-            "ssh",
-            "qsim",
-            f"tail -n {int(n_lines)} {remote_log_path} 2>/dev/null || echo NO_LOG:{remote_log_path}",
-        ],
+        _qsim_ssh_command(
+            f"tail -n {int(n_lines)} {remote_log_path} 2>/dev/null || echo NO_LOG:{remote_log_path}"
+        ),
         text=True,
     )
 
@@ -447,73 +480,75 @@ def run_qaoa_hpc_batch(
     active_jobs = {}
     completed_records = {}
 
-    while pending_records or active_jobs:
-        if pending_records and len(active_jobs) < max_outstanding_jobs:
-            wave_records = []
-            while pending_records and len(active_jobs) + len(wave_records) < max_outstanding_jobs:
-                wave_records.append(pending_records.popleft())
+    try:
+        while pending_records or active_jobs:
+            if pending_records and len(active_jobs) < max_outstanding_jobs:
+                wave_records = []
+                while pending_records and len(active_jobs) + len(wave_records) < max_outstanding_jobs:
+                    wave_records.append(pending_records.popleft())
 
-            _stage_qaoa_hpc_hamiltonians(
-                wave_records,
-                remote_run_dir=remote_run_dir,
-            )
-
-            for record in wave_records:
-                handle = _submit_qaoa_hpc_job(
-                    record,
+                _stage_qaoa_hpc_hamiltonians(
+                    wave_records,
                     remote_run_dir=remote_run_dir,
-                    remote_log_dir=remote_log_dir,
-                    local_hpc_result_dir=local_hpc_result_dir,
-                )
-                active_jobs[handle["job_id"]] = handle
-
-        if not active_jobs:
-            continue
-
-        active_states = _poll_hpc_job_states(active_jobs.keys())
-        available_results = _list_remote_hpc_results(remote_run_dir)
-
-        ready_to_fetch = []
-        for job_id, handle in list(active_jobs.items()):
-            remote_filename = Path(handle["remote_out"]).name
-            if job_id in active_states:
-                continue
-
-            if remote_filename in available_results:
-                ready_to_fetch.append(handle)
-                active_jobs.pop(job_id)
-                continue
-
-            handle["missing_result_polls"] += 1
-            if handle["missing_result_polls"] >= 3:
-                log_tail = _fetch_remote_log_tail(handle["remote_log"])
-                raise FileNotFoundError(
-                    f"No HPC result file found for patch {handle['patch_id']} / job {job_id}. "
-                    f"Checked {remote_run_dir}. Expected result file {handle['remote_out']} "
-                    f"and log file {handle['remote_log']}.\n\n"
-                    f"--- Tail of Slurm log ---\n{log_tail}"
                 )
 
-        if ready_to_fetch:
-            subprocess.run(
-                [
-                    "scp",
-                    *[f"qsim:{handle['remote_out']}" for handle in ready_to_fetch],
-                    str(local_hpc_result_dir),
-                ],
-                check=True,
-            )
+                for record in wave_records:
+                    handle = _submit_qaoa_hpc_job(
+                        record,
+                        remote_run_dir=remote_run_dir,
+                        remote_log_dir=remote_log_dir,
+                        local_hpc_result_dir=local_hpc_result_dir,
+                    )
+                    active_jobs[handle["job_id"]] = handle
 
-            for handle in ready_to_fetch:
-                bitstring, energy = _load_hpc_result_payload(handle["local_out"])
-                record = handle["record"]
-                record.bitstring = _normalize_qaoa_bitstring(bitstring)
-                record.energy = None if energy is None else float(energy)
-                record.save(local_result_dir)
-                completed_records[record.patch_id] = record
+            if not active_jobs:
+                continue
 
-        if active_jobs:
-            time.sleep(poll_interval_seconds)
+            active_states = _poll_hpc_job_states(active_jobs.keys())
+            available_results = _list_remote_hpc_results(remote_run_dir)
+
+            ready_to_fetch = []
+            for job_id, handle in list(active_jobs.items()):
+                remote_filename = Path(handle["remote_out"]).name
+                if job_id in active_states:
+                    continue
+
+                if remote_filename in available_results:
+                    ready_to_fetch.append(handle)
+                    active_jobs.pop(job_id)
+                    continue
+
+                handle["missing_result_polls"] += 1
+                if handle["missing_result_polls"] >= 3:
+                    log_tail = _fetch_remote_log_tail(handle["remote_log"])
+                    raise FileNotFoundError(
+                        f"No HPC result file found for patch {handle['patch_id']} / job {job_id}. "
+                        f"Checked {remote_run_dir}. Expected result file {handle['remote_out']} "
+                        f"and log file {handle['remote_log']}.\n\n"
+                        f"--- Tail of Slurm log ---\n{log_tail}"
+                    )
+
+            if ready_to_fetch:
+                subprocess.run(
+                    _qsim_scp_command(
+                        *[f"{_QSIM_HOST}:{handle['remote_out']}" for handle in ready_to_fetch],
+                        str(local_hpc_result_dir),
+                    ),
+                    check=True,
+                )
+
+                for handle in ready_to_fetch:
+                    bitstring, energy = _load_hpc_result_payload(handle["local_out"])
+                    record = handle["record"]
+                    record.bitstring = _normalize_qaoa_bitstring(bitstring)
+                    record.energy = None if energy is None else float(energy)
+                    record.save(local_result_dir)
+                    completed_records[record.patch_id] = record
+
+            if active_jobs:
+                time.sleep(poll_interval_seconds)
+    finally:
+        _close_qsim_ssh_master()
 
     return [
         completed_records[record.patch_id]
