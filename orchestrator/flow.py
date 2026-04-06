@@ -385,12 +385,11 @@ def _submit_qaoa_hpc_job(
     job_id = result.split()[-1]
 
     return {
-        "record": record,
         "patch_id": patch_id,
         "job_id": job_id,
         "remote_out": remote_out,
         "remote_log": f"{remote_log_dir}/slurm-{job_id}.out",
-        "local_out": local_hpc_result_dir / f"{patch_id}.json",
+        "local_out": str(local_hpc_result_dir / f"{patch_id}.json"),
         "missing_result_polls": 0,
     }
 
@@ -454,6 +453,58 @@ def _load_hpc_result_payload(local_out: Path):
     return bitstring, (None if energy is None else float(energy))
 
 
+@task(name="send_hpc_qaoa_wave")
+def send_hpc_qaoa_wave_task(
+    wave_records,
+    remote_run_dir: str,
+    remote_log_dir: str,
+    local_hpc_result_dir: str,
+):
+    local_hpc_result_dir_path = Path(local_hpc_result_dir)
+
+    _stage_qaoa_hpc_hamiltonians(
+        wave_records,
+        remote_run_dir=remote_run_dir,
+    )
+
+    return [
+        _submit_qaoa_hpc_job(
+            record,
+            remote_run_dir=remote_run_dir,
+            remote_log_dir=remote_log_dir,
+            local_hpc_result_dir=local_hpc_result_dir_path,
+        )
+        for record in wave_records
+    ]
+
+
+@task(name="fetch_hpc_qaoa_results")
+def fetch_hpc_qaoa_results_task(ready_to_fetch):
+    ready_to_fetch = list(ready_to_fetch)
+    if not ready_to_fetch:
+        return []
+
+    local_result_dir = Path(ready_to_fetch[0]["local_out"]).parent
+    subprocess.run(
+        _qsim_scp_command(
+            *[f"{_QSIM_HOST}:{handle['remote_out']}" for handle in ready_to_fetch],
+            str(local_result_dir),
+        ),
+        check=True,
+    )
+
+    fetched_results = []
+    for handle in ready_to_fetch:
+        bitstring, energy = _load_hpc_result_payload(Path(handle["local_out"]))
+        fetched_results.append({
+            "patch_id": handle["patch_id"],
+            "bitstring": _normalize_qaoa_bitstring(bitstring),
+            "energy": None if energy is None else float(energy),
+        })
+
+    return fetched_results
+
+
 def run_qaoa_hpc_batch(
     records,
     local_result_dir: str,
@@ -479,6 +530,10 @@ def run_qaoa_hpc_batch(
     pending_records = deque(records)
     active_jobs = {}
     completed_records = {}
+    records_by_patch_id = {
+        record.patch_id: record
+        for record in records
+    }
 
     try:
         while pending_records or active_jobs:
@@ -487,18 +542,14 @@ def run_qaoa_hpc_batch(
                 while pending_records and len(active_jobs) + len(wave_records) < max_outstanding_jobs:
                     wave_records.append(pending_records.popleft())
 
-                _stage_qaoa_hpc_hamiltonians(
+                submitted_handles = send_hpc_qaoa_wave_task(
                     wave_records,
                     remote_run_dir=remote_run_dir,
+                    remote_log_dir=remote_log_dir,
+                    local_hpc_result_dir=str(local_hpc_result_dir),
                 )
 
-                for record in wave_records:
-                    handle = _submit_qaoa_hpc_job(
-                        record,
-                        remote_run_dir=remote_run_dir,
-                        remote_log_dir=remote_log_dir,
-                        local_hpc_result_dir=local_hpc_result_dir,
-                    )
+                for handle in submitted_handles:
                     active_jobs[handle["job_id"]] = handle
 
             if not active_jobs:
@@ -529,19 +580,12 @@ def run_qaoa_hpc_batch(
                     )
 
             if ready_to_fetch:
-                subprocess.run(
-                    _qsim_scp_command(
-                        *[f"{_QSIM_HOST}:{handle['remote_out']}" for handle in ready_to_fetch],
-                        str(local_hpc_result_dir),
-                    ),
-                    check=True,
-                )
+                fetched_results = fetch_hpc_qaoa_results_task(ready_to_fetch)
 
-                for handle in ready_to_fetch:
-                    bitstring, energy = _load_hpc_result_payload(handle["local_out"])
-                    record = handle["record"]
-                    record.bitstring = _normalize_qaoa_bitstring(bitstring)
-                    record.energy = None if energy is None else float(energy)
+                for result in fetched_results:
+                    record = records_by_patch_id[result["patch_id"]]
+                    record.bitstring = result["bitstring"]
+                    record.energy = result["energy"]
                     record.save(local_result_dir)
                     completed_records[record.patch_id] = record
 
