@@ -1,4 +1,3 @@
-from networkx import nodes
 from prefect import flow, task
 from prefect.context import get_run_context
 
