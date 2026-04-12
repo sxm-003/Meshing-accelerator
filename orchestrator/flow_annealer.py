@@ -136,7 +136,6 @@ def annealer_meshing(
     else:
         merged_indices = np.unique(normal_indices)
 
-    print(f"\n  Total merged patch indices: {len(merged_indices)}")
     print(f"  Total merged patch nodes: {len(merged_indices)}")
     print(f"  Total original nodes: {len(nodes)}")
     print("\n Building mesh...")
