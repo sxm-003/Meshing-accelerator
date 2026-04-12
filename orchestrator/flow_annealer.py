@@ -14,22 +14,29 @@ from dwave.system import DWaveSampler, EmbeddingComposite
 
 
 def get_sampler():
+    # Create the D-Wave sampler on demand so importing this module does not
+    # immediately try to initialize a live QPU connection.
     return EmbeddingComposite(DWaveSampler())
 
 
 def _collect_selected_global_indices(records):
+    # Fallback path used when Gaussian merging is disabled.
+    # Convert each solved patch bitstring into global node indices and
+    # aggregate them into one deduplicated array.
     selected_chunks = []
 
     for record in records:
         if record.bitstring is None or record.global_indices is None:
             continue
 
+        # Keep the local node positions selected by the annealer.
         selected_local = [
             idx for idx, bit in enumerate(record.bitstring) if bit == "1"
         ]
         if not selected_local:
             continue
 
+        # Map local patch selections back to the full node array.
         selected_chunks.append(np.asarray(record.global_indices)[selected_local])
 
     if not selected_chunks:
@@ -40,15 +47,19 @@ def _collect_selected_global_indices(records):
 
 @task
 def anneal_patch_task(record: orc.PatchRecord, rec_dir: str, num_reads):
+    # Each record must already point to the saved sparse-Pauli Hamiltonian.
     if not record.hamiltonian_path:
         raise ValueError(f"Record {record.patch_id} does not have a hamiltonian path.")
-    
+
+    # Load the saved Hamiltonian, convert it to a QUBO, then sample it on D-Wave.
     H = load_sparse_pauli_from_npz(record.hamiltonian_path)
     Q, offset = sparse_pauli_to_qubo(H)
     sampler = get_sampler()
     sampleset = sampler.sample_qubo(Q, num_reads=num_reads)
     best = sampleset.first
 
+    # Store the best sample back on the patch record so downstream merge/mesh
+    # stages can consume it in the same way as the QAOA flow consumes solved patches.
     sample = best.sample
     record.bitstring = ''.join(str(sample[i]) for i in sorted(sample))
     record.energy = float(best.energy)
@@ -81,15 +92,49 @@ def annealer_meshing(
     export_formats: tuple = ("msh", "vtk", "obj"),
 
 ):  
+    """
+    D-Wave annealing-based mesh optimization pipeline.
+
+    Full pipeline:
+      DXF -> nodes -> critical/normal split ->
+      Hamiltonian build on critical patches ->
+      annealing on critical patches ->
+      merge with normal-region nodes -> mesh -> export
+
+    Args:
+        dxf_path: Path to DXF file with mesh nodes
+        L_patch: Characteristic length scale used for patching / overlap / merging
+        L_nodes: Base node spacing used by crude generation and as the adaptive fallback
+        Q_max: Maximum qubits per critical patch
+        overlap_factor: Controls overlap between patches (0.0=no overlap, 1.0=standard, >1.0=more)
+        jitter_factor: Random jitter for node generation (0.0=uniform grid, 1.0=full jitter)
+        use_gaussian_merging: Enable Gaussian-weighted merging of overlapping critical patches
+        hamiltonian_concurrency: Max number of in-flight Hamiltonian build tasks
+        adaptive_nodes: If True, use adaptive density node generation
+        L_fine: Fine spacing for adaptive mode (auto from L_nodes if None)
+        L_coarse: Coarse spacing for adaptive mode (auto from L_nodes if None)
+        curvature_weight: How much boundary curvature affects node density (0..1)
+        use_critical_regions: Enable critical-vs-normal region segmentation
+        critical_curvature_percentile: Curvature percentile threshold for critical nodes
+        critical_min_angle_threshold: Reserved for notebook parity
+        critical_edge_ratio_threshold: Edge-ratio threshold for critical nodes
+        normal_region_qmax: Patch node cap for normal/classical regions
+        num_reads: Number of annealing reads per critical patch
+        smooth_iterations: Laplacian smoothing passes on final mesh (0=disable)
+        export_formats: Mesh file formats to export
+    """
     ctx = get_run_context()
     run_id = str(ctx.flow_run.id)
-    
+
+    # Keep all annealer artifacts grouped under the Prefect run id.
     base_dir = Path("outputs") / run_id
     ham_dir = base_dir / "hamiltonians"
     rec_dir = base_dir / "records"
     ham_dir.mkdir(parents=True, exist_ok=True)
     rec_dir.mkdir(parents=True, exist_ok=True)
 
+    # Reuse the same upstream orchestration tasks as the QAOA flow:
+    # node generation -> region partitioning -> patch records.
     nodes, cad_boundary_idx = orc.generate_nodes_task(
         dxf_path,
         jitter_factor=jitter_factor,
@@ -126,7 +171,9 @@ def annealer_meshing(
     print("\n  Building Hamiltonians...")
     if hamiltonian_concurrency < 1:
         raise ValueError("hamiltonian_concurrency must be at least 1.")
-    
+
+    # Build sparse-Pauli Hamiltonians in parallel, but cap the number of
+    # in-flight task submissions to avoid overwhelming Prefect/Dask.
     ham_builds = deque()
     ham_records = []
     for rec in critical_records:
@@ -141,6 +188,8 @@ def annealer_meshing(
     while ham_builds:
         ham_records.append(ham_builds.popleft().result())
 
+    # Anneal critical patches sequentially so QPU submissions happen one patch
+    # at a time after Hamiltonian generation is complete.
     annealed_records = []
     for record in ham_records:
         annealed_records.append(anneal_patch_task.submit(
@@ -150,6 +199,7 @@ def annealer_meshing(
         ).result())
 
     if use_gaussian_merging:
+        # Preferred path: merge overlapping critical-patch selections smoothly.
         merged_critical_indices = orc.merge_patches_gaussian_task(
             annealed_records,
             nodes,
@@ -157,8 +207,11 @@ def annealer_meshing(
         )
         merged_critical_indices = np.asarray(merged_critical_indices, dtype=np.intp)
     else:
+        # Simpler fallback: just union all selected critical nodes directly.
         merged_critical_indices = _collect_selected_global_indices(annealed_records)
 
+    # Final mesh input combines classical normal-region nodes with the critical
+    # nodes recovered from annealing.
     merged_indices = np.unique(
         np.concatenate([normal_indices, merged_critical_indices])
     )
@@ -166,7 +219,8 @@ def annealer_meshing(
     print(f"  Total merged patch nodes: {len(merged_indices)}")
     print(f"  Total original nodes: {len(nodes)}")
     print("\n Building mesh...")
-    
+
+    # Reuse the mesh-construction task from the main orchestrator flow.
     mesh_dir = base_dir / "mesh"
     mesh_info = orc.build_mesh_task(
         nodes,
@@ -178,6 +232,7 @@ def annealer_meshing(
         formats=export_formats,
     )
 
+    # Optional visualization of solved critical patches.
     all_traces = []
     for rec in annealed_records:
         traces = orc.patch_traces(
@@ -196,6 +251,7 @@ def annealer_meshing(
         )
         fig_all.show() 
 
+    # Return the same core artifacts that downstream analysis/code will care about.
     return {
         "merged_indices": merged_indices,
         "critical_merged_indices": merged_critical_indices,
