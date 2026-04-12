@@ -17,7 +17,10 @@ def get_sampler():
 
 
 @task
-def anneal_patch_task(record: orc.PatchRecord, rec_dir: str, num_reads: int = 1000):
+def anneal_patch_task(record: orc.PatchRecord, rec_dir: str, num_reads):
+    if not record.hamiltonian_path:
+        raise ValueError(f"Record {record.patch_id} does not have a hamiltonian path.")
+    
     H = load_sparse_pauli_from_npz(record.hamiltonian_path)
     Q, offset = sparse_pauli_to_qubo(H)
     sampler = get_sampler()
@@ -51,6 +54,7 @@ def annealer_meshing(
     critical_min_angle_threshold: float = 15.0,
     critical_edge_ratio_threshold: float = 4.0,
     normal_region_qmax: Optional[int] = None,
+    num_reads: int = 1000,
     smooth_iterations: int = 5,
     export_formats: tuple = ("msh", "vtk", "obj"),
 
@@ -120,7 +124,7 @@ def annealer_meshing(
         annealed_records.append(anneal_patch_task.submit(
             record,
             str(rec_dir),
-            num_reads=1000,
+            num_reads=num_reads,
         ).result())
 
     if use_gaussian_merging:
@@ -147,7 +151,7 @@ def annealer_meshing(
     dxf_path,
     str(mesh_dir),
     cad_boundary_idx=cad_boundary_idx,
-    smooth_iterations=5,
+    smooth_iterations=smooth_iterations,
     formats=export_formats,
     )
 
@@ -175,12 +179,12 @@ def annealer_meshing(
             "critical_merged_indices": merged_critical_indices,
             "normal_indices": normal_indices,
             "mesh_info": mesh_info,
-            "qaoa_records": annealed_records,
+            "annealed_records": annealed_records,
         }
     else:
-        return {"qaoa_records": annealed_records}
+        return {"annealed_records": annealed_records}
     
 
 if __name__ == "__main__":
-    annealer_meshing(dxf_path="data/test.dxf")
+    annealer_meshing(dxf_path="data/test.dxf", num_reads=1000)
 
