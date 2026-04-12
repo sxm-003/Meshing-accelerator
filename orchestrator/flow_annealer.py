@@ -12,8 +12,30 @@ from helper_functions.npz_to_pauli import load_sparse_pauli_from_npz
 
 from dwave.system import DWaveSampler, EmbeddingComposite
 
+
 def get_sampler():
     return EmbeddingComposite(DWaveSampler())
+
+
+def _collect_selected_global_indices(records):
+    selected_chunks = []
+
+    for record in records:
+        if record.bitstring is None or record.global_indices is None:
+            continue
+
+        selected_local = [
+            idx for idx, bit in enumerate(record.bitstring) if bit == "1"
+        ]
+        if not selected_local:
+            continue
+
+        selected_chunks.append(np.asarray(record.global_indices)[selected_local])
+
+    if not selected_chunks:
+        return np.empty(0, dtype=np.intp)
+
+    return np.unique(np.concatenate(selected_chunks)).astype(np.intp, copy=False)
 
 
 @task
@@ -132,13 +154,14 @@ def annealer_meshing(
             annealed_records,
             nodes,
             L_patch,
-    )
+        )
         merged_critical_indices = np.asarray(merged_critical_indices, dtype=np.intp)
-        merged_indices = np.unique(
+    else:
+        merged_critical_indices = _collect_selected_global_indices(annealed_records)
+
+    merged_indices = np.unique(
         np.concatenate([normal_indices, merged_critical_indices])
     )
-    else:
-        merged_indices = np.unique(normal_indices)
 
     print(f"  Total merged patch nodes: {len(merged_indices)}")
     print(f"  Total original nodes: {len(nodes)}")
@@ -146,23 +169,23 @@ def annealer_meshing(
     
     mesh_dir = base_dir / "mesh"
     mesh_info = orc.build_mesh_task(
-    nodes,
-    merged_indices,
-    dxf_path,
-    str(mesh_dir),
-    cad_boundary_idx=cad_boundary_idx,
-    smooth_iterations=smooth_iterations,
-    formats=export_formats,
+        nodes,
+        merged_indices,
+        dxf_path,
+        str(mesh_dir),
+        cad_boundary_idx=cad_boundary_idx,
+        smooth_iterations=smooth_iterations,
+        formats=export_formats,
     )
 
     all_traces = []
     for rec in annealed_records:
         traces = orc.patch_traces(
-        patch_nodes = rec.patch_nodes,
-        phi = rec.phi,
-        bitstring= rec.bitstring,
-        patch_id=rec.patch_id,
-        show_phi=True,
+            patch_nodes=rec.patch_nodes,
+            phi=rec.phi,
+            bitstring=rec.bitstring,
+            patch_id=rec.patch_id,
+            show_phi=True,
         )
         all_traces.extend(traces)
 
@@ -173,18 +196,14 @@ def annealer_meshing(
         )
         fig_all.show() 
 
-    if use_gaussian_merging:
-        return {
-            "merged_indices": merged_indices,
-            "critical_merged_indices": merged_critical_indices,
-            "normal_indices": normal_indices,
-            "mesh_info": mesh_info,
-            "annealed_records": annealed_records,
-        }
-    else:
-        return {"annealed_records": annealed_records}
+    return {
+        "merged_indices": merged_indices,
+        "critical_merged_indices": merged_critical_indices,
+        "normal_indices": normal_indices,
+        "mesh_info": mesh_info,
+        "annealed_records": annealed_records,
+    }
     
 
 if __name__ == "__main__":
     annealer_meshing(dxf_path="data/test.dxf", num_reads=1000)
-
