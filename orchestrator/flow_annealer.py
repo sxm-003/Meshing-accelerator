@@ -12,13 +12,15 @@ from helper_functions.npz_to_pauli import load_sparse_pauli_from_npz
 
 from dwave.system import DWaveSampler, EmbeddingComposite
 
-sampler = EmbeddingComposite(DWaveSampler())
+def get_sampler():
+    return EmbeddingComposite(DWaveSampler())
+
 
 @task
 def anneal_patch_task(record: orc.PatchRecord, rec_dir: str, num_reads: int = 1000):
     H = load_sparse_pauli_from_npz(record.hamiltonian_path)
     Q, offset = sparse_pauli_to_qubo(H)
-
+    sampler = get_sampler()
     sampleset = sampler.sample_qubo(Q, num_reads=num_reads)
     best = sampleset.first
 
