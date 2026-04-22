@@ -351,12 +351,13 @@ def generate_crude_nodes(path, jitter_factor=0.0, L=0.4):
     validator = GeometryValidator(polygons)
     polygons = validator.polygons
 
-    boundary_spacing = max(0.125 * float(L), 1e-6)
-    offset_spacing = max(0.25 * float(L), 1e-6)
+    boundary_spacing = max(0.08 * float(L), 1e-6)
+    offset_spacing = max(0.16 * float(L), 1e-6)
     offset_distances = [
-        0.125 * float(L),
-        0.30 * float(L),
-        0.625 * float(L),
+        0.10 * float(L),
+        0.22 * float(L),
+        0.40 * float(L),
+        0.65 * float(L),
     ]
 
     boundary_nodes = sample_boundaries_shapely(

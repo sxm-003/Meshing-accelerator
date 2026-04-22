@@ -162,6 +162,56 @@ def compute_density_field(query_pts, polygons, L_fine, L_coarse,
     return L_field
 
 
+def _deduplicate_with_origin_priority(nodes, origin, radius):
+    """
+    Remove near-duplicate points while preserving boundary ownership.
+
+    Priority order:
+      boundary nodes (2) > offset nodes (1) > interior nodes (0)
+    """
+    if len(nodes) == 0:
+        return nodes, origin
+
+    pairs = cKDTree(nodes).query_pairs(r=radius)
+    if not pairs:
+        return nodes, origin
+
+    adjacency = [[] for _ in range(len(nodes))]
+    for i, j in pairs:
+        adjacency[i].append(j)
+        adjacency[j].append(i)
+
+    visited = np.zeros(len(nodes), dtype=bool)
+    keep_mask = np.ones(len(nodes), dtype=bool)
+
+    for start in range(len(nodes)):
+        if visited[start]:
+            continue
+
+        stack = [start]
+        component = []
+        while stack:
+            idx = stack.pop()
+            if visited[idx]:
+                continue
+            visited[idx] = True
+            component.append(idx)
+            stack.extend(adjacency[idx])
+
+        if len(component) == 1:
+            continue
+
+        priorities = origin[component]
+        best_priority = priorities.max()
+        best_candidates = [idx for idx in component if origin[idx] == best_priority]
+        keep_idx = min(best_candidates)
+
+        for idx in component:
+            keep_mask[idx] = (idx == keep_idx)
+
+    return nodes[keep_mask], origin[keep_mask]
+
+
 # ─────────────────────────────────────────────────────────────
 #  Adaptive grid generator
 # ─────────────────────────────────────────────────────────────
@@ -182,7 +232,7 @@ def adaptive_grid_shapely(
     The algorithm:
       1. Create a *fine* candidate grid at spacing L_fine/2
       2. Compute the desired local spacing L(x) at every candidate
-      3. Accept/reject each candidate with probability (L_fine/L(x))²
+      3. Accept/reject each candidate with probability (h/L(x))²
          This produces the correct point density everywhere.
       4. Apply optional jitter
 
@@ -210,7 +260,7 @@ def adaptive_grid_shapely(
     minx, miny, maxx, maxy = validator.bounds
 
     # Fine candidate grid
-    h = L_fine / 3.0
+    h = L_fine / 2.0
     xs = np.arange(minx, maxx + h, h)
     ys = np.arange(miny, maxy + h, h)
     gx, gy = np.meshgrid(xs, ys)
@@ -230,9 +280,9 @@ def adaptive_grid_shapely(
     )
 
     # --- Probabilistic thinning ---
-    # Probability of keeping a point  ∝  (L_fine / L_local)²
+    # Probability of keeping a point  ∝  (h / L_local)²
     # so fine regions keep ~all candidates, coarse regions keep fewer
-    accept_prob = (L_fine / L_local) ** 2
+    accept_prob = (h / L_local) ** 2
     accept_prob = np.clip(accept_prob, 0, 1)
     keep = rng.random(len(candidates)) < accept_prob
     pts = candidates[keep]
@@ -306,14 +356,23 @@ def generate_adaptive_nodes(path, L_fine=None, L_coarse=None, L=None,
     validator = GeometryValidator(polygons)
     polygons = validator.polygons
 
+    boundary_spacing = max(L_fine * 0.35, 1e-6)
+    offset_spacing = max(L_fine * 0.55, 1e-6)
+    offset_distances = [
+        L_fine * 0.50,
+        L_fine * 1.20,
+        L_fine * 2.10,
+        L_fine * 3.20,
+    ]
+
     # 1. Boundary nodes
-    boundary_nodes = sample_boundaries_shapely(polygons, spacing=L_fine * 0.5)
+    boundary_nodes = sample_boundaries_shapely(polygons, spacing=boundary_spacing)
 
     # 2. Offset layers (at fine spacing near boundary)
     offset_nodes = offset_boundary_layers(
         polygons,
-        offsets=[L_fine, L_fine * 2.5, L_fine * 5.0],
-        spacing=L_fine,
+        offsets=offset_distances,
+        spacing=offset_spacing,
     )
 
     # 3. Adaptive interior grid
@@ -351,15 +410,8 @@ def generate_adaptive_nodes(path, L_fine=None, L_coarse=None, L=None,
     origin = np.concatenate(labels)
 
     # De-duplicate (keep one of each near-coincident pair)
-    tree = cKDTree(nodes)
-    pairs = tree.query_pairs(r=L_fine * 0.2)
-    remove = set()
-    for i, j in pairs:
-        remove.add(max(i, j))
-    if remove:
-        keep = sorted(set(range(len(nodes))) - remove)
-        nodes = nodes[keep]
-        origin = origin[keep]
+    dedup_radius = max(1e-9, min(boundary_spacing, offset_spacing, L_fine) * 0.45)
+    nodes, origin = _deduplicate_with_origin_priority(nodes, origin, dedup_radius)
 
     interior_nodes = nodes[origin == 0]
     offset_nodes_out = nodes[origin == 1]
