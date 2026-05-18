@@ -624,9 +624,9 @@ def build_hamiltonian_task(record: PatchRecord, ham_dir: str, rec_dir: str):
     # Enable boundary alignment if boundary nodes present
     boundary_nodes = record.boundary_nodes_idx if has_boundary else None
 
-    tuning_params = { 'domain': 0, 'spacing': 0, 'sparsity': 2, 'bend': 1.8,
-        'max_edge': 1.6, 'density': 0, 'angular_bins': 0,
-        'collinearity': 2, 'boundary_alignment': 1.5
+    tuning_params = { 'domain': 0.6, 'spacing': 0.7, 'sparsity': 1.8, 'bend': 1.0,
+        'max_edge': 1.7, 'density': 1.0, 'angular_bins': 1.9,
+        'collinearity': 1.9, 'boundary_alignment': 1.9
     }
 
     H = hamiltonian_builder(
@@ -934,7 +934,7 @@ def build_mesh_task(nodes, merged_indices, dxf_path, output_dir,
 
 @flow(task_runner=DaskTaskRunner( 
     cluster_kwargs={
-        "n_workers": 6,  
+        "n_workers": 10,  
         "threads_per_worker": 2, 
         "processes": True,
         "memory_limit": "auto",  
@@ -944,18 +944,18 @@ def build_mesh_task(nodes, merged_indices, dxf_path, output_dir,
 ))
 def mesh_hamiltonian_pipeline(
     dxf_path: str,
-    L_patch: float = 30,
-    L_nodes: float = 15,
+    L_patch: float = 15,
+    L_nodes: float = 10,
     Q_max: int = 20,
     overlap_factor: float = 1.5,
     jitter_factor: float = 0.0,
     use_gaussian_merging: bool = True,
     hamiltonian_concurrency: int = 64,
     parallel_qaoa: bool = True,
-    qaoa_concurrency: int = 8,
+    qaoa_concurrency: int = 40,
     qaoa_backend: str = "hpc",
     qaoa_backend_config: Optional[dict] = None,
-    adaptive_nodes: bool = False,
+    adaptive_nodes: bool = True,
     L_fine: Optional[float] = None,
     L_coarse: Optional[float] = None,
     curvature_weight: float = 0.5,
