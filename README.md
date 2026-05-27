@@ -1,4 +1,4 @@
-# MeshOptimiser (main)
+# Meshing-accelerator (main)
 
 This folder contains the end-to-end mesh pipeline, Prefect flows, QAOA/Aer backends, and the HPC workflow.
 
