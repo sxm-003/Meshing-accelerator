@@ -5,7 +5,7 @@ This folder contains the end-to-end mesh pipeline, Prefect flows, QAOA/Aer backe
 ## 1) Environment creation
 
 From the repo root:
-
+`Kindly rename Meshing-accelerator as main`
 ```bash
 cd main
 python -m venv .venv
