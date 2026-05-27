@@ -204,3 +204,6 @@ Every run writes to a run-scoped folder under `outputs/` (Prefect flow run id):
 - `outputs/<run_id>/critical_merged_indices.npy`: merged critical nodes
 
 If you need a custom output directory, update the path construction in [main/orchestrator/flow.py](main/orchestrator/flow.py).
+
+Kindly contact me on any issues at Discord: sxm_dead . I have indeed used AI at places of commenting, some part of code and Readme.md creation as well, I have verified them but do let me know in cases of any error. Thank you. 
+Hope you enjoy my tinkering :\)  
