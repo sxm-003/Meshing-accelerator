@@ -37,6 +37,8 @@ results/
 .env.local
 
 #Test notebooks
-*.ipynb
+notebook/
+3d_test.ipynb
+visualise.ipynb
 
 visualise/

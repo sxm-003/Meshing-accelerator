@@ -46,6 +46,8 @@ dependencies = [
     "pyside6",
 
     "scipy",
+    "pandas",
+    "psutil",
     "qiskit",
     "qrisp[iqm]>=0.8.2; python_version < '3.13'",
     "iqm-client[qiskit,cirq]>=33.0.5; python_version < '3.13'",
@@ -53,6 +55,10 @@ dependencies = [
     "prefect_dask",
     "qiskit-aer",
     "matplotlib",
+    "dimod",
+    "dwave-system",
+    "mpi4py",
+    "qulacs",
 
 ]
 

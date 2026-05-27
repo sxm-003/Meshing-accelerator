@@ -1044,7 +1044,7 @@ def mesh_hamiltonian_pipeline(
     ham_dir.mkdir(parents=True, exist_ok=True)
     rec_dir.mkdir(parents=True, exist_ok=True)
 
-    # --- pipeline ---
+    #  pipeline 
     nodes, cad_boundary_idx = generate_nodes_task(
         dxf_path,
         jitter_factor=jitter_factor,
@@ -1174,7 +1174,7 @@ def mesh_hamiltonian_pipeline(
     else:
         print("\n  No critical patches detected; skipping QAOA stage.")
 
-    # --- Gaussian patch merging (critical patches only) + hybrid assembly ---
+    #  Gaussian patch merging (critical patches only) + hybrid assembly 
     mesh_info = None
     merged_critical_indices = np.empty(0, dtype=np.intp)
     merged_indices = normal_indices.copy()
@@ -1205,7 +1205,7 @@ def mesh_hamiltonian_pipeline(
         print(f"  Saved hybrid merged indices to {merged_path}")
         print(f"  Saved critical merged indices to {critical_merged_path}")
 
-        # --- Build final mesh: Delaunay triangulate → smooth → export ---
+        #  Build final mesh: Delaunay triangulate -> smooth -> export 
         mesh_dir = base_dir / "mesh"
         mesh_info = build_mesh_task(
             nodes, merged_indices, dxf_path, str(mesh_dir),
@@ -1214,7 +1214,7 @@ def mesh_hamiltonian_pipeline(
             formats=export_formats,
         )
 
-    # --- Visualization (critical/QAOA patches only) ---
+    #Visualization (critical/QAOA patches only) 
     all_traces = []
     for r in qaoa_records:
         traces = patch_traces(
