@@ -190,11 +190,25 @@ Token handling options:
 
 Keep token files out of Git and store them outside the repo or under a locally ignored `tokens/` folder.
 
-## 9) Annealing flow (work in progress)
+Runtime credits warning: IQM runs consume credits. Only execute hardware runs if you understand the cost impact.
+
+## 9) Aer + IBM batch notebook (test_module_aer-IBM.ipynb)
+
+For local Aer module testing, enable Prefect and run:
+
+```bash
+prefect server start
+```
+
+Then open [main/test_module_aer-IBM.ipynb](main/test_module_aer-IBM.ipynb) and execute the Aer sections.
+
+This notebook also includes an IBM hardware path using the IBM batch workflow. It is commented out and under development. Use at your own risk because IBM hardware runs consume runtime credits.
+
+## 10) Annealing flow (work in progress)
 
 The annealing flow is implemented in [main/orchestrator/flow_annealer.py](main/orchestrator/flow_annealer.py). It mirrors the QAOA pipeline but sends Hamiltonians to a D-Wave sampler. This is under active development and may change.
 
-## 10) Outputs and artifacts
+## 11) Outputs and artifacts
 
 Every run writes to a run-scoped folder under `outputs/` (Prefect flow run id):
 - `outputs/<run_id>/hamiltonians`: saved sparse-Pauli Hamiltonians
