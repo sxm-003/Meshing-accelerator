@@ -13,8 +13,7 @@ from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
 
 
 DEFAULT_IBM_INSTANCE_CRN = (
-    "crn:v1:bluemix:public:quantum-computing:us-east:a/"
-    "cc2e0f22fdfa4d26b310c3a4e45d3d55:eb75d8c5-c985-488b-b279-ba2c76442fa7::"
+    "crn"
 )
 
 
