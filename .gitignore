@@ -38,3 +38,5 @@ results/
 
 #Test notebooks
 *.ipynb
+
+visualise/
