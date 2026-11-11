@@ -121,46 +121,11 @@ mesh_hamiltonian_pipeline(
 )
 ```
 
-HPC (remote scheduler):
-```python
-mesh_hamiltonian_pipeline(
-    "data/sample.dxf",
-    qaoa_backend="hpc",
-    qaoa_backend_config={
-        "remote_run_dir": "~/hpc_runs/your_run",
-        "remote_log_dir": "~/qaoa_logs/your_run",
-        "poll_interval_seconds": 15,
-    },
-)
-```
+For the HPC backend, see section 6.
 
 ## 6) Fujitsu simulator / HPC backend (QSIM)
 
-This workflow uses the scripts in [main/HPC_Jobs](main/HPC_Jobs) and the SSH host name `qsim` (see [main/orchestrator/flow.py](main/orchestrator/flow.py)).
-
-Important notes:
-- Copy all files in [main/HPC_Jobs](main/HPC_Jobs) into the MPI QARP-enabled environment.
-- Do NOT include `qaoa_qulacs_mpi3.py` or `run_qaoa3.sh` in that environment.
-
-### SSH config
-
-Create a host entry that matches the name `qsim`:
-
-```text
-Host qsim
-  HostName <your-hpc-host>
-  User <your-username>
-  IdentityFile ~/.ssh/<your-key>
-  ServerAliveInterval 30
-```
-
-You can test the connection and pipeline with [main/2d_testHPC.ipynb](main/2d_testHPC.ipynb).
-
-To force the HPC backend in the pipeline:
-
-```python
-mesh_hamiltonian_pipeline("data/hpc_test_sq.dxf", qaoa_backend="hpc")
-```
+Instructions for this backend have been temporarily removed pending review. Use the Aer backend (section 7) for local runs.
 
 ## 7) Aer backend (local users)
 

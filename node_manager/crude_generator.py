@@ -102,7 +102,7 @@ def extract_segments(msp, curve_samples=64):
                 knots=e.knots
             )
 
-            pts = [
+            pts = [                                                                             
                 np.array(spline.point(t))[:2]
                 for t in np.linspace(0, 1, curve_samples)
             ]
