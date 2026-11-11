@@ -13,7 +13,7 @@ echo "Hamiltonian input: $1"
 echo "Result output: $2"
 echo "Log directory: $log_dir"
 
-source "$HOME/QARPdemo/venv/bin/activate"
+source "${QAOA_VENV:?set QAOA_VENV}/bin/activate"
 
 export QAOA_REPS="${QAOA_REPS:-1}"
 export QAOA_MAXITER="${QAOA_MAXITER:-40}"
